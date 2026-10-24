@@ -12,15 +12,15 @@ Designed with an uncompromising monochrome aesthetic, studio-quality 1080p artwo
 
 <br/>
 
+[![Latest Release](https://img.shields.io/github/v/release/RamzzzMD/Ranzz-Music?color=white&label=Release&logo=github&style=for-the-badge)](https://github.com/RamzzzMD/Ranzz-Music/releases/latest)
+[![APK Size](https://img.shields.io/badge/APK%20Size-4.3%20MB-black?style=for-the-badge&logo=android)](https://github.com/RamzzzMD/Ranzz-Music/releases/latest)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/RamzzzMD/Ranzz-Music/build-apk.yml?branch=main&label=Build&style=for-the-badge&logo=githubactions)](https://github.com/RamzzzMD/Ranzz-Music/actions)
-[![APK Size](https://img.shields.io/badge/APK%20Size-4.1%20MB-black?style=for-the-badge&logo=android)](https://github.com/RamzzzMD/Ranzz-Music/actions/runs/40106881884)
-[![Latest Run](https://img.shields.io/badge/GitHub%20Actions-Passing-brightgreen?style=for-the-badge&logo=github)](https://github.com/RamzzzMD/Ranzz-Music/actions/runs/40106881884)
 [![License](https://img.shields.io/badge/License-GPL%20v3-black?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Android-8.0%2B%20(SDK%2026%2B)-black?style=for-the-badge&logo=android)](https://developer.android.com)
 
 <br/>
 
-[📥 **Unduh APK (GitHub Actions)**](https://github.com/RamzzzMD/Ranzz-Music/actions/runs/40106881884) • [✨ **Features**](#-fitur-utama) • [🏗️ **Architecture**](#-arsitektur--performa) • [🚀 **Building**](#-kompilasi-dari-source)
+[📥 **Unduh APK (GitHub Releases)**](https://github.com/RamzzzMD/Ranzz-Music/releases/latest) • [✨ **Features**](#-fitur-utama) • [🏗️ **Architecture**](#-arsitektur--performa) • [🚀 **Building**](#-kompilasi-dari-source)
 
 ---
 
@@ -148,21 +148,19 @@ Ranzz Music dirancang menggunakan standar arsitektur modern Android:
 
 ## 📥 Unduh & Instalasi
 
-Berkas APK dikompilasi secara otomatis setiap kali ada pembaruan kode melalui **GitHub Actions Runner**:
+Unduh berkas APK resmi langsung dari halaman **[GitHub Releases](https://github.com/RamzzzMD/Ranzz-Music/releases/latest)**:
 
-🚀 **[Kunjungi Halaman Build GitHub Actions Terakhir (#40106881884)](https://github.com/RamzzzMD/Ranzz-Music/actions/runs/40106881884)**
+🚀 **[Kunjungi Halaman Rilis Resmi (v3.4.0)](https://github.com/RamzzzMD/Ranzz-Music/releases/tag/v3.4.0)**
 
-| Artifak APK | Format | Ukuran | Status | Keterangan |
+| Berkas APK | Format | Ukuran | Unduh Langsung (1-Klik) | Keterangan |
 | :--- | :---: | :---: | :---: | :--- |
-| **[`Ranzz-Music-Release-APK`](https://github.com/RamzzzMD/Ranzz-Music/actions/runs/40106881884)** | `.zip` (`.apk`) | **4.1 MB** | ✅ Siap Pakai | *Sangat disarankan.* Versi rilis final dengan optimasi R8 ProGuard (*minified & resources shrunk*), ditandatangani keystore resmi Ranzz Music. |
-| **[`Ranzz-Music-Debug-APK`](https://github.com/RamzzzMD/Ranzz-Music/actions/runs/40106881884)** | `.zip` (`.apk`) | **21.7 MB** | ✅ Pengujian | Versi debug yang memuat simbol inspeksi lengkap untuk pengembang & logcat. |
+| **Ranzz Music Release** | `.apk` | **4.29 MB** | [📥 **Download Ranzz-Music-v3.4.0.apk**](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.4.0/Ranzz-Music-v3.4.0.apk) | *Sangat disarankan.* Versi rilis final dengan optimasi R8 ProGuard (*minified & resources shrunk*), ditandatangani keystore resmi Ranzz Music. Siap pasang langsung di HP. |
+| **Ranzz Music Debug** | `.apk` | **22.22 MB** | [📥 **Download Ranzz-Music-v3.4.0-debug.apk**](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.4.0/Ranzz-Music-v3.4.0-debug.apk) | Versi pengujian debug yang memuat simbol inspeksi lengkap untuk pengembang & logcat. |
 
-> **📱 Panduan Unduh & Pasang APK di HP Android:**
-> 1. Buka tautan **[GitHub Actions Run #40106881884](https://github.com/RamzzzMD/Ranzz-Music/actions/runs/40106881884)** (pastikan sudah login ke akun GitHub Anda).
-> 2. Gulir ke bagian paling bawah ke tabel **Artifacts**.
-> 3. Klik pada tombol **`Ranzz-Music-Release-APK`** untuk mengunduh file zip.
-> 4. Ekstrak file zip dan pasang `app-release.apk` di perangkat Anda.
-> 5. Jika muncul peringatan *"Install from unknown sources"*, aktifkan izin instalasi untuk browser/pengelola file Anda.
+> **📱 Panduan Pasang APK di HP Android:**
+> 1. Klik tautan [Download Ranzz-Music-v3.4.0.apk](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.4.0/Ranzz-Music-v3.4.0.apk) di atas untuk langsung mengunduh file `.apk` ke HP Android Anda.
+> 2. Buka file hasil unduhan dan pilih **Install**.
+> 3. Jika muncul notifikasi keamanan *"Install unknown apps"*, izinkan akses untuk browser atau file manager Anda.
 
 <br/>
 

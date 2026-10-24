@@ -3,6 +3,7 @@ name: Build Ranzz Music APK
 on:
   push:
     branches: [ "main", "master" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -10,6 +11,9 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -53,3 +57,16 @@ jobs:
           name: Ranzz-Music-Debug-APK
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
+
+      - name: Prepare Release APKs
+        run: |
+          mkdir -p release-apks
+          cp app/build/outputs/apk/release/*.apk release-apks/Ranzz-Music-v3.4.0.apk
+          cp app/build/outputs/apk/debug/*.apk release-apks/Ranzz-Music-v3.4.0-debug.apk
+
+      - name: Publish to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-apks/*.apk
+          generate_release_notes: true
