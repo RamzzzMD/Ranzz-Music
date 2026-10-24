@@ -22,8 +22,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.BarChart
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Logout
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
@@ -66,6 +68,7 @@ fun ProfileMenuSheet(
     val colors = RanzzAppTheme.colors
     var showStatsDialog by remember { mutableStateOf(false) }
     var showRecentsDialog by remember { mutableStateOf(false) }
+    var showEditProfileDialog by remember { mutableStateOf(false) }
 
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
     val onRepeatTracks by viewModel.onRepeatTracks.collectAsState()
@@ -125,36 +128,50 @@ fun ProfileMenuSheet(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable {
-                            if (account == null) {
-                                onLoginClick()
-                                onDismiss()
-                            }
-                        },
+                        .clickable { showEditProfileDialog = true },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (account?.avatarUrl != null && account.avatarUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = account.avatarUrl,
-                            contentDescription = account.name,
-                            modifier = Modifier
-                                .size(54.dp)
-                                .clip(CircleShape)
-                                .border(1.5.dp, colors.accent, CircleShape),
-                            contentScale = ContentScale.Crop
-                        )
-                    } else {
+                    Box(contentAlignment = Alignment.BottomEnd) {
+                        if (account?.avatarUrl != null && account.avatarUrl.isNotBlank()) {
+                            AsyncImage(
+                                model = account.avatarUrl,
+                                contentDescription = account.name,
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .border(1.5.dp, colors.accent, CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.card),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                androidx.compose.foundation.Image(
+                                    painter = androidx.compose.ui.res.painterResource(com.ranzz.music.R.drawable.logo_monochrome),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
+                        }
+
+                        // Small edit badge over avatar
                         Box(
                             modifier = Modifier
-                                .size(54.dp)
+                                .size(20.dp)
                                 .clip(CircleShape)
-                                .background(colors.card),
+                                .background(colors.accent)
+                                .border(1.5.dp, colors.card, CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
-                            androidx.compose.foundation.Image(
-                                painter = androidx.compose.ui.res.painterResource(com.ranzz.music.R.drawable.logo_monochrome),
-                                contentDescription = null,
-                                modifier = Modifier.size(32.dp)
+                            Icon(
+                                imageVector = Icons.Outlined.Edit,
+                                contentDescription = "Edit Foto",
+                                tint = colors.background,
+                                modifier = Modifier.size(11.dp)
                             )
                         }
                     }
@@ -171,11 +188,27 @@ fun ProfileMenuSheet(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = if (account != null) (account.email.ifBlank { "Akun Google Terhubung" }) else "Ketuk untuk Login Google",
+                            text = if (account?.isGoogleLinked == true) {
+                                account.email.ifBlank { "Akun Google Terhubung" }
+                            } else {
+                                "Ketuk untuk Edit Nama & Foto"
+                            },
                             style = Typography.bodyMedium,
                             color = colors.textMuted,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { showEditProfileDialog = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Edit,
+                            contentDescription = "Edit Profil",
+                            tint = colors.textMuted,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -185,7 +218,7 @@ fun ProfileMenuSheet(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Action Row (Add Account / Switch / Logout)
-                if (account != null) {
+                if (account?.isGoogleLinked == true) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -211,7 +244,7 @@ fun ProfileMenuSheet(
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "Ganti / Keluar Akun",
+                            text = "Ganti / Keluar Akun Google",
                             style = Typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                             color = colors.textPrimary
                         )
@@ -258,7 +291,15 @@ fun ProfileMenuSheet(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // 1. Listening Stats (Taste Profile)
+                // 1. Edit Profile (Custom Name & PP)
+                DrawerMenuItem(
+                    icon = Icons.Outlined.Edit,
+                    title = "Edit Nama & Foto Profil",
+                    subtitle = "Ubah nama panggilan & ganti custom PP",
+                    onClick = { showEditProfileDialog = true }
+                )
+
+                // 2. Listening Stats (Taste Profile)
                 DrawerMenuItem(
                     icon = Icons.Outlined.BarChart,
                     title = "Statistik Mendengarkan",
@@ -266,7 +307,7 @@ fun ProfileMenuSheet(
                     onClick = { showStatsDialog = true }
                 )
 
-                // 2. Recents
+                // 3. Recents
                 DrawerMenuItem(
                     icon = Icons.Outlined.History,
                     title = "Terakhir Diputar",
@@ -274,7 +315,7 @@ fun ProfileMenuSheet(
                     onClick = { showRecentsDialog = true }
                 )
 
-                // 3. Settings & Privacy
+                // 4. Settings & Privacy
                 DrawerMenuItem(
                     icon = Icons.Outlined.Settings,
                     title = "Pengaturan & Privasi",
@@ -286,6 +327,14 @@ fun ProfileMenuSheet(
                 )
             }
         }
+    }
+
+    if (showEditProfileDialog) {
+        EditProfileDialog(
+            account = account,
+            viewModel = viewModel,
+            onDismiss = { showEditProfileDialog = false }
+        )
     }
 
     // Listening Stats Dialog

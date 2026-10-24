@@ -711,6 +711,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         com.ranzz.music.data.auth.AuthManager.getInstance().logout()
     }
 
+    fun updateCustomProfile(newName: String, newAvatarPathOrUrl: String?) {
+        com.ranzz.music.data.auth.AuthManager.getInstance().updateCustomProfile(newName, newAvatarPathOrUrl)
+    }
+
+    fun saveAvatarFromUri(uri: android.net.Uri): String? {
+        return com.ranzz.music.data.auth.AuthManager.getInstance().saveAvatarFromUri(uri)
+    }
+
+    fun resetToOriginalProfile() {
+        com.ranzz.music.data.auth.AuthManager.getInstance().resetToOriginalProfile()
+    }
+
     override fun onCleared() {
         super.onCleared()
         try {

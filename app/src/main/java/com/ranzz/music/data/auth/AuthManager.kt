@@ -14,6 +14,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import android.net.Uri
+import java.io.File
+import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -22,8 +25,13 @@ data class UserAccount(
     val email: String,
     val channelHandle: String,
     val avatarUrl: String,
-    val cookie: String
-)
+    val cookie: String = "",
+    val isCustomAvatar: Boolean = false,
+    val isCustomName: Boolean = false
+) {
+    val isGoogleLinked: Boolean
+        get() = cookie.isNotBlank()
+}
 
 class AuthManager private constructor(private val context: Context) {
 
@@ -34,11 +42,20 @@ class AuthManager private constructor(private val context: Context) {
     val authState: StateFlow<UserAccount?> = _authState.asStateFlow()
 
     private fun loadStoredAccount(): UserAccount? {
-        val cookie = prefs.getString(KEY_COOKIE, null) ?: return null
-        var name = prefs.getString(KEY_NAME, "YouTube User") ?: "YouTube User"
+        val cookie = prefs.getString(KEY_COOKIE, null)
+        val isCustomName = prefs.getBoolean(KEY_IS_CUSTOM_NAME, false)
+        val isCustomAvatar = prefs.getBoolean(KEY_IS_CUSTOM_AVATAR, false)
+        val customName = prefs.getString(KEY_CUSTOM_NAME, "") ?: ""
+        val customAvatar = prefs.getString(KEY_CUSTOM_AVATAR, "") ?: ""
+
+        val rawSavedName = prefs.getString(KEY_NAME, if (cookie != null) "YouTube User" else "Ranzz Music Lover") ?: "Ranzz Music Lover"
+        var name = if (isCustomName && customName.isNotBlank()) customName else rawSavedName
+
+        val rawSavedAvatar = prefs.getString(KEY_AVATAR, "") ?: ""
+        val avatar = if (isCustomAvatar && customAvatar.isNotBlank()) customAvatar else rawSavedAvatar
+
         var email = prefs.getString(KEY_EMAIL, "") ?: ""
         var handle = prefs.getString(KEY_HANDLE, "") ?: ""
-        val avatar = prefs.getString(KEY_AVATAR, "") ?: ""
 
         // Sanitize if previously saved as raw JSON object string
         if (name.startsWith("{") || name.contains("\"runs\"")) {
@@ -51,7 +68,20 @@ class AuthManager private constructor(private val context: Context) {
             handle = parseRawJsonRuns(handle)
         }
 
-        return UserAccount(name, email, handle, avatar, cookie)
+        // Return account if logged in OR if user has set a custom profile locally
+        if (cookie.isNullOrBlank() && !isCustomName && !isCustomAvatar) {
+            return null
+        }
+
+        return UserAccount(
+            name = name,
+            email = email,
+            channelHandle = handle,
+            avatarUrl = avatar,
+            cookie = cookie ?: "",
+            isCustomAvatar = isCustomAvatar,
+            isCustomName = isCustomName
+        )
     }
 
     private fun parseRawJsonRuns(jsonStr: String): String {
@@ -97,24 +127,35 @@ class AuthManager private constructor(private val context: Context) {
     }
 
     fun handleLoginSuccess(cookie: String, initialName: String = "", initialAvatar: String = "") {
-        val savedName = if (initialName.isNotBlank()) initialName else (prefs.getString(KEY_NAME, "YouTube User") ?: "YouTube User")
-        val savedAvatar = if (initialAvatar.isNotBlank()) initialAvatar else (prefs.getString(KEY_AVATAR, "") ?: "")
+        val isCustomName = prefs.getBoolean(KEY_IS_CUSTOM_NAME, false)
+        val isCustomAvatar = prefs.getBoolean(KEY_IS_CUSTOM_AVATAR, false)
+        val customName = prefs.getString(KEY_CUSTOM_NAME, "") ?: ""
+        val customAvatar = prefs.getString(KEY_CUSTOM_AVATAR, "") ?: ""
+
+        val googleName = if (initialName.isNotBlank()) initialName else (prefs.getString(KEY_NAME, "YouTube User") ?: "YouTube User")
+        val googleAvatar = if (initialAvatar.isNotBlank()) initialAvatar else (prefs.getString(KEY_AVATAR, "") ?: "")
+
+        val editor = prefs.edit()
+            .putString(KEY_COOKIE, cookie)
+            .putString(KEY_ORIGINAL_GOOGLE_NAME, googleName)
+            .putString(KEY_ORIGINAL_GOOGLE_AVATAR, googleAvatar)
+
+        if (initialName.isNotBlank()) editor.putString(KEY_NAME, initialName)
+        if (initialAvatar.isNotBlank()) editor.putString(KEY_AVATAR, initialAvatar)
+        editor.apply()
+
+        val resolvedName = if (isCustomName && customName.isNotBlank()) customName else googleName
+        val resolvedAvatar = if (isCustomAvatar && customAvatar.isNotBlank()) customAvatar else googleAvatar
 
         val initialAccount = UserAccount(
-            name = savedName,
+            name = resolvedName,
             email = prefs.getString(KEY_EMAIL, "") ?: "",
             channelHandle = prefs.getString(KEY_HANDLE, "") ?: "",
-            avatarUrl = savedAvatar,
-            cookie = cookie
+            avatarUrl = resolvedAvatar,
+            cookie = cookie,
+            isCustomAvatar = isCustomAvatar,
+            isCustomName = isCustomName
         )
-        prefs.edit()
-            .putString(KEY_COOKIE, cookie)
-            .apply {
-                if (initialName.isNotBlank()) putString(KEY_NAME, initialName)
-                if (initialAvatar.isNotBlank()) putString(KEY_AVATAR, initialAvatar)
-            }
-            .apply()
-
         _authState.value = initialAccount
 
         // Fetch detailed profile from InnerTube in background
@@ -124,23 +165,130 @@ class AuthManager private constructor(private val context: Context) {
     }
 
     fun updateProfile(name: String, email: String, avatarUrl: String) {
-        val current = _authState.value ?: return
-        val newName = if (name.isNotBlank()) name else current.name
-        val newEmail = if (email.isNotBlank()) email else current.email
-        val newAvatar = if (avatarUrl.isNotBlank()) avatarUrl else current.avatarUrl
+        val current = _authState.value
+
+        val editor = prefs.edit()
+        if (name.isNotBlank()) {
+            editor.putString(KEY_NAME, name)
+            editor.putString(KEY_ORIGINAL_GOOGLE_NAME, name)
+        }
+        if (email.isNotBlank()) editor.putString(KEY_EMAIL, email)
+        if (avatarUrl.isNotBlank()) {
+            editor.putString(KEY_AVATAR, avatarUrl)
+            editor.putString(KEY_ORIGINAL_GOOGLE_AVATAR, avatarUrl)
+        }
+        editor.apply()
+
+        val isCustomName = prefs.getBoolean(KEY_IS_CUSTOM_NAME, false)
+        val isCustomAvatar = prefs.getBoolean(KEY_IS_CUSTOM_AVATAR, false)
+        val customName = prefs.getString(KEY_CUSTOM_NAME, "") ?: ""
+        val customAvatar = prefs.getString(KEY_CUSTOM_AVATAR, "") ?: ""
+
+        val finalName = if (isCustomName && customName.isNotBlank()) customName else (if (name.isNotBlank()) name else (current?.name ?: "YouTube User"))
+        val finalAvatar = if (isCustomAvatar && customAvatar.isNotBlank()) customAvatar else (if (avatarUrl.isNotBlank()) avatarUrl else (current?.avatarUrl ?: ""))
+
+        _authState.value = current?.copy(
+            name = finalName,
+            email = if (email.isNotBlank()) email else current.email,
+            avatarUrl = finalAvatar,
+            isCustomAvatar = isCustomAvatar,
+            isCustomName = isCustomName
+        ) ?: UserAccount(
+            name = finalName,
+            email = email,
+            channelHandle = "",
+            avatarUrl = finalAvatar,
+            cookie = "",
+            isCustomAvatar = isCustomAvatar,
+            isCustomName = isCustomName
+        )
+        Log.d("RanzzAuth", "Profile updated: $finalName ($finalAvatar)")
+    }
+
+    /**
+     * User explicitly updates their display name and/or avatar picture.
+     * Works both when logged in with Google and for offline/guest profiles.
+     */
+    fun updateCustomProfile(newName: String, newAvatarPathOrUrl: String?) {
+        val current = _authState.value
+        val nameToSet = newName.trim().ifBlank { current?.name ?: "Ranzz Music Lover" }
+        val avatarToSet = if (newAvatarPathOrUrl != null) newAvatarPathOrUrl else (current?.avatarUrl ?: "")
+
+        val editor = prefs.edit()
+            .putString(KEY_CUSTOM_NAME, nameToSet)
+            .putBoolean(KEY_IS_CUSTOM_NAME, true)
+
+        if (newAvatarPathOrUrl != null) {
+            editor.putString(KEY_CUSTOM_AVATAR, newAvatarPathOrUrl)
+            editor.putBoolean(KEY_IS_CUSTOM_AVATAR, true)
+        }
+        editor.apply()
+
+        _authState.value = UserAccount(
+            name = nameToSet,
+            email = current?.email ?: "",
+            channelHandle = current?.channelHandle ?: "",
+            avatarUrl = avatarToSet,
+            cookie = current?.cookie ?: "",
+            isCustomAvatar = if (newAvatarPathOrUrl != null) true else (current?.isCustomAvatar ?: false),
+            isCustomName = true
+        )
+        Log.d("RanzzAuth", "Custom profile set: name=$nameToSet, avatar=$avatarToSet")
+    }
+
+    /**
+     * Copies an image from a content URI (e.g. from gallery Photo Picker) to app's internal files
+     * so it permanently persists and never suffers from permission expiration.
+     */
+    fun saveAvatarFromUri(uri: Uri): String? {
+        return try {
+            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
+            val profileDir = File(context.filesDir, "profiles").apply { mkdirs() }
+            
+            // Clean up old avatar files to prevent storage leak
+            profileDir.listFiles()?.forEach { file ->
+                if (file.name.startsWith("custom_avatar_")) {
+                    file.delete()
+                }
+            }
+
+            val avatarFile = File(profileDir, "custom_avatar_${System.currentTimeMillis()}.jpg")
+            FileOutputStream(avatarFile).use { out ->
+                inputStream.copyTo(out)
+            }
+            avatarFile.absolutePath
+        } catch (e: Exception) {
+            Log.e("RanzzAuth", "Error saving avatar from Uri: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Resets custom name & avatar back to the original Google account profile (if logged in),
+     * or back to default guest profile.
+     */
+    fun resetToOriginalProfile() {
+        val current = _authState.value
+        val originalName = prefs.getString(KEY_ORIGINAL_GOOGLE_NAME, prefs.getString(KEY_NAME, "YouTube User")) ?: "YouTube User"
+        val originalAvatar = prefs.getString(KEY_ORIGINAL_GOOGLE_AVATAR, prefs.getString(KEY_AVATAR, "")) ?: ""
 
         prefs.edit()
-            .putString(KEY_NAME, newName)
-            .putString(KEY_EMAIL, newEmail)
-            .putString(KEY_AVATAR, newAvatar)
+            .putBoolean(KEY_IS_CUSTOM_NAME, false)
+            .putBoolean(KEY_IS_CUSTOM_AVATAR, false)
+            .remove(KEY_CUSTOM_NAME)
+            .remove(KEY_CUSTOM_AVATAR)
             .apply()
 
-        _authState.value = current.copy(
-            name = newName,
-            email = newEmail,
-            avatarUrl = newAvatar
-        )
-        Log.d("RanzzAuth", "Profile explicitly updated: $newName ($newAvatar)")
+        if (current != null && current.cookie.isNotBlank()) {
+            _authState.value = current.copy(
+                name = originalName,
+                avatarUrl = originalAvatar,
+                isCustomAvatar = false,
+                isCustomName = false
+            )
+        } else {
+            _authState.value = null
+        }
     }
 
     suspend fun fetchAccountInfo(cookie: String) {
@@ -240,8 +388,32 @@ class AuthManager private constructor(private val context: Context) {
     }
 
     fun logout() {
-        prefs.edit().clear().apply()
-        _authState.value = null
+        prefs.edit()
+            .remove(KEY_COOKIE)
+            .remove(KEY_EMAIL)
+            .remove(KEY_HANDLE)
+            .remove(KEY_ORIGINAL_GOOGLE_NAME)
+            .remove(KEY_ORIGINAL_GOOGLE_AVATAR)
+            .apply()
+
+        val isCustomName = prefs.getBoolean(KEY_IS_CUSTOM_NAME, false)
+        val isCustomAvatar = prefs.getBoolean(KEY_IS_CUSTOM_AVATAR, false)
+        if (isCustomName || isCustomAvatar) {
+            val customName = prefs.getString(KEY_CUSTOM_NAME, "Ranzz Music Lover") ?: "Ranzz Music Lover"
+            val customAvatar = prefs.getString(KEY_CUSTOM_AVATAR, "") ?: ""
+            _authState.value = UserAccount(
+                name = customName,
+                email = "",
+                channelHandle = "",
+                avatarUrl = customAvatar,
+                cookie = "",
+                isCustomAvatar = isCustomAvatar,
+                isCustomName = isCustomName
+            )
+        } else {
+            _authState.value = null
+        }
+
         try {
             android.webkit.CookieManager.getInstance().removeAllCookies(null)
             android.webkit.CookieManager.getInstance().flush()
@@ -257,6 +429,13 @@ class AuthManager private constructor(private val context: Context) {
         private const val KEY_EMAIL = "yt_email"
         private const val KEY_HANDLE = "yt_handle"
         private const val KEY_AVATAR = "yt_avatar"
+
+        private const val KEY_CUSTOM_NAME = "custom_profile_name"
+        private const val KEY_CUSTOM_AVATAR = "custom_profile_avatar"
+        private const val KEY_IS_CUSTOM_NAME = "is_custom_name"
+        private const val KEY_IS_CUSTOM_AVATAR = "is_custom_avatar"
+        private const val KEY_ORIGINAL_GOOGLE_NAME = "original_google_name"
+        private const val KEY_ORIGINAL_GOOGLE_AVATAR = "original_google_avatar"
 
         @Volatile
         private var instance: AuthManager? = null
