@@ -61,8 +61,13 @@ jobs:
       - name: Prepare Release APKs
         run: |
           mkdir -p release-apks
-          cp app/build/outputs/apk/release/*.apk release-apks/Ranzz-Music-v3.4.0.apk
-          cp app/build/outputs/apk/debug/*.apk release-apks/Ranzz-Music-v3.4.0-debug.apk
+          TAG_NAME="${{ github.ref_name }}"
+          if [ -z "$TAG_NAME" ] || [ "$TAG_NAME" = "main" ]; then
+            TAG_NAME="v3.4.1"
+          fi
+          cp app/build/outputs/apk/release/*.apk release-apks/Ranzz-Music-${TAG_NAME}.apk
+          cp app/build/outputs/apk/release/*.apk release-apks/Ranzz-Music-Release.apk
+          cp app/build/outputs/apk/debug/*.apk release-apks/Ranzz-Music-${TAG_NAME}-debug.apk
 
       - name: Publish to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
