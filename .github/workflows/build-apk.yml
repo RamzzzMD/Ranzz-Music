@@ -32,6 +32,11 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
+      - name: Generate Ranzz Keystore
+        run: |
+          rm -f app/ranzz.keystore
+          keytool -genkey -v -keystore app/ranzz.keystore -alias ranzz -keyalg RSA -keysize 2048 -validity 10000 -storepass ranzzandroidapp -keypass ranzzandroidapp -dname "CN=RanzzMusic, OU=Ranzz, O=Ranzz, L=Jakarta, C=ID"
+
       - name: Build Release & Debug APKs
         run: ./gradlew assembleRelease assembleDebug --stacktrace
 
