@@ -1,6 +1,7 @@
 package com.ranzz.music
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -11,6 +12,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
@@ -36,6 +39,15 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import com.ranzz.music.data.update.UpdateInfo
+import com.ranzz.music.data.update.UpdateManager
+import com.ranzz.music.ui.components.UpdateDialog
 import com.ranzz.music.data.model.Track
 import com.ranzz.music.ui.components.FullPlayerSheet
 import com.ranzz.music.ui.components.MiniPlayer
@@ -53,6 +65,27 @@ import com.ranzz.music.viewmodel.MusicViewModel
 
 class MainActivity : ComponentActivity() {
 
+    /**
+     * AppCompat's per-app locales only reach AppCompatActivity on Android 12 and below.
+     * Since Ranzz Music uses ComponentActivity (platform theme), apply the saved language here.
+     */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        val language = try {
+            com.ranzz.music.data.settings.SettingsManager.init(newBase).language.value.code
+        } catch (_: Exception) {
+            ""
+        }
+        if (language.isEmpty()) {
+            super.attachBaseContext(newBase)
+            return
+        }
+        val locale = java.util.Locale(language)
+        java.util.Locale.setDefault(locale)
+        val configuration = android.content.res.Configuration(newBase.resources.configuration)
+        configuration.setLocale(locale)
+        super.attachBaseContext(newBase.createConfigurationContext(configuration))
+    }
+
     private val viewModel: MusicViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,12 +98,28 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        if (intent?.getBooleanExtra(EXTRA_EXPAND_PLAYER, false) == true) {
+            viewModel.expandPlayer(true)
+        }
+
         setContent {
             val themeMode by viewModel.themeMode.collectAsState()
             RanzzTheme(themeMode = themeMode) {
                 MainAppScreen(viewModel = viewModel)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_EXPAND_PLAYER, false)) {
+            viewModel.expandPlayer(true)
+        }
+    }
+
+    companion object {
+        const val EXTRA_EXPAND_PLAYER = "EXTRA_EXPAND_PLAYER"
     }
 }
 
@@ -86,6 +135,19 @@ fun MainAppScreen(viewModel: MusicViewModel) {
     val isExpanded by viewModel.isPlayerExpanded.collectAsState()
     val isShuffle by viewModel.isShuffle.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
+
+    val context = LocalContext.current
+    var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (!UpdateManager.hasCheckedThisSession) {
+            UpdateManager.hasCheckedThisSession = true
+            val update = UpdateManager.getInstance(context).checkForUpdate(force = false)
+            if (update != null) {
+                availableUpdate = update
+            }
+        }
+    }
 
     BackHandler(enabled = isExpanded) {
         viewModel.expandPlayer(false)
@@ -106,22 +168,24 @@ fun MainAppScreen(viewModel: MusicViewModel) {
                         NavigationBarItem(
                             selected = selected,
                             onClick = {
-                                navController.navigate(screen.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
+                                if (currentRoute != screen.route) {
+                                    navController.navigate(screen.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
                                 }
                             },
                             icon = {
                                 Icon(
                                     painter = painterResource(screen.iconRes),
-                                    contentDescription = screen.title,
+                                    contentDescription = stringResource(screen.titleRes),
                                     modifier = Modifier.size(24.dp)
                                 )
                             },
-                            label = { Text(screen.title) },
+                            label = { Text(stringResource(screen.titleRes)) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = colors.textPrimary,
                                 selectedTextColor = colors.textPrimary,
@@ -155,7 +219,6 @@ fun MainAppScreen(viewModel: MusicViewModel) {
                     }
                 }
 
-                // Floating MiniPlayer above bottom nav bar
                 if (currentTrack != null && !isExpanded) {
                     MiniPlayerContainer(
                         viewModel = viewModel,
@@ -164,17 +227,22 @@ fun MainAppScreen(viewModel: MusicViewModel) {
                         isLoading = isLoadingTrack,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = 8.dp)
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
                     )
                 }
             }
         }
 
-        // Full-Screen Player overlay
         AnimatedVisibility(
             visible = isExpanded && currentTrack != null,
-            enter = slideInVertically(initialOffsetY = { it }),
-            exit = slideOutVertically(targetOffsetY = { it })
+            enter = slideInVertically(
+                animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                initialOffsetY = { it }
+            ),
+            exit = slideOutVertically(
+                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
+                targetOffsetY = { it }
+            )
         ) {
             currentTrack?.let { track ->
                 FullPlayerSheet(
@@ -193,6 +261,19 @@ fun MainAppScreen(viewModel: MusicViewModel) {
                     onDismiss = { viewModel.expandPlayer(false) }
                 )
             }
+        }
+
+        if (availableUpdate != null) {
+            UpdateDialog(
+                updateInfo = availableUpdate!!,
+                onDownloadClick = {
+                    UpdateManager.getInstance(context).startDownloadAndInstall(availableUpdate!!)
+                    availableUpdate = null
+                },
+                onDismiss = {
+                    availableUpdate = null
+                }
+            )
         }
     }
 }

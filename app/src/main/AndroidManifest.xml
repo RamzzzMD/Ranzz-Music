@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".RanzzMusicApp"
@@ -27,6 +28,40 @@
             </intent-filter>
         </activity>
 
+        <receiver
+            android:name=".widget.RanzzCompactWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/ranzz_compact_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.RanzzSquareWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/ranzz_square_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.RanzzWidgetActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.ranzz.music.widget.COMMAND" />
+                <action android:name="com.ranzz.music.widget.PLAY_PAUSE" />
+                <action android:name="com.ranzz.music.widget.NEXT" />
+                <action android:name="com.ranzz.music.widget.PREVIOUS" />
+                <action android:name="com.ranzz.music.widget.FAVORITE" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".service.PlaybackService"
             android:exported="false"
@@ -35,6 +70,16 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

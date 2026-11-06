@@ -35,3 +35,9 @@
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }
+
+# Ranzz Native Core (Rust JNI)
+-keepclasseswithmembernames class com.ranzz.music.data.native.RanzzNativeCore {
+    native <methods>;
+}
+-keep class com.ranzz.music.data.native.** { *; }

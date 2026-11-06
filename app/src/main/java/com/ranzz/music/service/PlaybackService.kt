@@ -4,11 +4,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -21,15 +24,38 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.ranzz.music.MainActivity
 import com.ranzz.music.R
+import com.ranzz.music.data.model.Track
+import com.ranzz.music.data.player.PlayerQueueManager
+import com.ranzz.music.data.recommendation.TasteManager
+import com.ranzz.music.data.remote.MusicRepository
+import com.ranzz.music.data.settings.SettingsManager
+import com.ranzz.music.widget.WIDGET_SOURCE_URL_KEY
+import com.ranzz.music.widget.loadPersistedTrack
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class PlaybackService : MediaSessionService() {
 
     private var player: Player? = null
     private var mediaSession: MediaSession? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    @Volatile
+    private var restoringSession = false
+    private var pauseTimeoutJob: Job? = null
 
     companion object {
+        private const val TAG = "RanzzPlaybackService"
+        private const val PAUSE_TIMEOUT_MS = 5 * 60 * 1000L
         const val CHANNEL_ID = "ranzz_playback_channel"
         const val NOTIFICATION_ID = 1001
+        const val ACTION_PLAY_PAUSE = "com.ranzz.music.ACTION_PLAY_PAUSE"
         const val ACTION_NEXT = "com.ranzz.music.ACTION_NEXT"
         const val ACTION_PREV = "com.ranzz.music.ACTION_PREV"
     }
@@ -38,7 +64,6 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        // 1. Ensure Notification Channel exists to prevent Android ANR / crash on startForeground
         createNotificationChannel()
 
         val audioAttributes = AudioAttributes.Builder()
@@ -59,13 +84,12 @@ class PlaybackService : MediaSessionService() {
 
         val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory, extractorsFactory)
 
-        // Ultra-low latency buffering with robust fMP4/AAC headroom
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 15_000,
-                /* maxBufferMs = */ 50_000,
-                /* bufferForPlaybackMs = */ 500,
-                /* bufferForPlaybackAfterRebufferMs = */ 1_500
+                15_000,
+                30_000,
+                500,
+                1_500
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -75,48 +99,109 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
         exoPlayer.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                Log.e("RanzzPlaybackService", "ExoPlayer Error: ${error.message}", error)
+                Log.e(TAG, "ExoPlayer Error: ${error.message}", error)
+                val current = PlayerQueueManager.currentTrack.value
+                if (current != null) {
+                    try {
+                        MusicRepository().evictStreamUrl(current.url)
+                    } catch (_: Throwable) {}
+                }
+                val failureCount = PlayerQueueManager.recordPlaybackFailure()
+                if (failureCount < 3) {
+                    val nextTrack = PlayerQueueManager.getNextTrack(userInitiated = false, isErrorRecovery = true)
+                    if (nextTrack != null) {
+                        playTrack(nextTrack)
+                    }
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    PlayerQueueManager.recordPlaybackSuccess()
+                } else if (playbackState == Player.STATE_ENDED) {
+                    val current = PlayerQueueManager.currentTrack.value
+                    if (current != null) {
+                        TasteManager.getInstance(this@PlaybackService).recordTrackPlayed(current)
+                    }
+                    val nextTrack = PlayerQueueManager.getNextTrack(userInitiated = false)
+                    if (nextTrack != null) {
+                        playTrack(nextTrack)
+                    }
+                }
+                updatePauseTimeout(exoPlayer)
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                updatePauseTimeout(exoPlayer)
             }
         })
 
         val forwardingPlayer = object : androidx.media3.common.ForwardingPlayer(exoPlayer) {
+            override fun play() {
+                if (mediaItemCount == 0) {
+                    restoreLastSessionAndPlay()
+                    return
+                }
+                if (playbackState == Player.STATE_IDLE) {
+                    prepare()
+                }
+                super.play()
+            }
+
             override fun isCommandAvailable(command: Int): Boolean {
                 return when (command) {
                     Player.COMMAND_SEEK_TO_NEXT,
-                    Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                    Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> PlayerQueueManager.hasNext()
                     Player.COMMAND_SEEK_TO_PREVIOUS,
-                    Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> true
+                    Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> PlayerQueueManager.hasPrevious()
                     else -> super.isCommandAvailable(command)
                 }
             }
 
             override fun getAvailableCommands(): Player.Commands {
-                return super.getAvailableCommands().buildUpon()
-                    .add(Player.COMMAND_SEEK_TO_NEXT)
-                    .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-                    .add(Player.COMMAND_SEEK_TO_PREVIOUS)
-                    .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
-                    .build()
+                val builder = super.getAvailableCommands().buildUpon()
+                if (PlayerQueueManager.hasNext()) {
+                    builder.add(Player.COMMAND_SEEK_TO_NEXT)
+                    builder.add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                } else {
+                    builder.remove(Player.COMMAND_SEEK_TO_NEXT)
+                    builder.remove(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                }
+                if (PlayerQueueManager.hasPrevious()) {
+                    builder.add(Player.COMMAND_SEEK_TO_PREVIOUS)
+                    builder.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                } else {
+                    builder.remove(Player.COMMAND_SEEK_TO_PREVIOUS)
+                    builder.remove(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                }
+                return builder.build()
             }
 
             override fun seekToNext() {
-                sendBroadcast(Intent(ACTION_NEXT).setPackage(packageName))
+                val nextTrack = PlayerQueueManager.getNextTrack(userInitiated = true)
+                if (nextTrack != null) {
+                    playTrack(nextTrack)
+                }
             }
 
             override fun seekToNextMediaItem() {
-                sendBroadcast(Intent(ACTION_NEXT).setPackage(packageName))
+                seekToNext()
             }
 
             override fun seekToPrevious() {
-                sendBroadcast(Intent(ACTION_PREV).setPackage(packageName))
+                val prevTrack = PlayerQueueManager.getPreviousTrack()
+                if (prevTrack != null) {
+                    playTrack(prevTrack)
+                }
             }
 
             override fun seekToPreviousMediaItem() {
-                sendBroadcast(Intent(ACTION_PREV).setPackage(packageName))
+                seekToPrevious()
             }
         }
 
@@ -124,6 +209,7 @@ class PlaybackService : MediaSessionService() {
 
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(MainActivity.EXTRA_EXPAND_PLAYER, true)
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -146,6 +232,89 @@ class PlaybackService : MediaSessionService() {
             .build()
     }
 
+    private fun updatePauseTimeout(targetPlayer: Player) {
+        val isPausedOrEnded = !targetPlayer.playWhenReady ||
+            targetPlayer.playbackState == Player.STATE_ENDED ||
+            targetPlayer.playbackState == Player.STATE_IDLE
+        if (isPausedOrEnded) {
+            if (pauseTimeoutJob == null) {
+                pauseTimeoutJob = serviceScope.launch {
+                    delay(PAUSE_TIMEOUT_MS)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        stopForeground(STOP_FOREGROUND_DETACH)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        stopForeground(false)
+                    }
+                }
+            }
+        } else {
+            pauseTimeoutJob?.cancel()
+            pauseTimeoutJob = null
+        }
+    }
+
+    private fun playTrack(track: Track) {
+        serviceScope.launch {
+            try {
+                val quality = SettingsManager.getInstance().audioQuality.value
+                val repository = MusicRepository()
+                val resolved = withContext(Dispatchers.IO) {
+                    runCatching { repository.getAudioStream(track.url, quality) }.getOrNull()
+                }
+                if (resolved == null) {
+                    Log.e(TAG, "Failed to resolve stream for ${track.title}")
+                    val errorCount = PlayerQueueManager.recordPlaybackFailure()
+                    if (errorCount < 3) {
+                        val nextTrack = PlayerQueueManager.getNextTrack(userInitiated = false, isErrorRecovery = true)
+                        if (nextTrack != null) {
+                            playTrack(nextTrack)
+                        }
+                    }
+                    return@launch
+                }
+
+                val bestThumbnail = withContext(Dispatchers.IO) {
+                    runCatching { repository.resolveBestThumbnail(track) }.getOrDefault(track.thumbnailUrl)
+                }
+
+                val updatedTrack = track.copy(
+                    streamUrl = resolved.url,
+                    mimeType = resolved.mimeType,
+                    thumbnailUrl = bestThumbnail
+                )
+                PlayerQueueManager.updateCurrentTrack(updatedTrack)
+                PlayerQueueManager.recordPlaybackSuccess()
+
+                val metadata = MediaMetadata.Builder()
+                    .setTitle(updatedTrack.title)
+                    .setArtist(updatedTrack.artist)
+                    .setArtworkUri(Uri.parse(updatedTrack.highResThumbnailUrl))
+                    .setDisplayTitle(updatedTrack.title)
+                    .setExtras(android.os.Bundle().apply {
+                        putString(WIDGET_SOURCE_URL_KEY, updatedTrack.url)
+                    })
+                    .build()
+
+                val builder = MediaItem.Builder()
+                    .setMediaId(updatedTrack.id)
+                    .setUri(resolved.url)
+                    .setMediaMetadata(metadata)
+                if (!resolved.mimeType.isNullOrBlank()) {
+                    builder.setMimeType(resolved.mimeType)
+                }
+
+                player?.run {
+                    setMediaItem(builder.build())
+                    prepare()
+                    playWhenReady = true
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error playing track: ${e.message}", e)
+            }
+        }
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -153,7 +322,7 @@ class PlaybackService : MediaSessionService() {
                 getString(R.string.app_name),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Ranzz Music Playback Controls"
+                description = getString(R.string.playback_channel_desc)
                 setShowBadge(false)
             }
             val notificationManager = getSystemService(NotificationManager::class.java)
@@ -161,11 +330,69 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun restoreLastSessionAndPlay() {
+        if (restoringSession) return
+        restoringSession = true
+        serviceScope.launch {
+            try {
+                val track = loadPersistedTrack(this@PlaybackService) ?: return@launch
+                if (track.url.isBlank()) return@launch
+                val quality = SettingsManager.getInstance().audioQuality.value
+                val resolved = withContext(Dispatchers.IO) {
+                    runCatching { MusicRepository().getAudioStream(track.url, quality) }.getOrNull()
+                } ?: return@launch
+
+                val metadata = MediaMetadata.Builder()
+                    .setTitle(track.title)
+                    .setArtist(track.artist)
+                    .setArtworkUri(Uri.parse(track.highResThumbnailUrl))
+                    .setDisplayTitle(track.title)
+                    .setExtras(android.os.Bundle().apply {
+                        putString(WIDGET_SOURCE_URL_KEY, track.url)
+                    })
+                    .build()
+
+                val builder = MediaItem.Builder()
+                    .setMediaId(track.id)
+                    .setUri(resolved.url)
+                    .setMediaMetadata(metadata)
+                if (!resolved.mimeType.isNullOrBlank()) {
+                    builder.setMimeType(resolved.mimeType)
+                }
+
+                player?.run {
+                    setMediaItem(builder.build())
+                    prepare()
+                    playWhenReady = true
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to restore last session: ${e.message}")
+            } finally {
+                restoringSession = false
+            }
+        }
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
         return mediaSession
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val activePlayer = mediaSession?.player
+        if (activePlayer == null || !activePlayer.playWhenReady || activePlayer.mediaItemCount == 0) {
+            stopSelf()
+        }
+    }
+
     override fun onDestroy() {
+        pauseTimeoutJob?.cancel()
+        pauseTimeoutJob = null
+        serviceScope.cancel()
         mediaSession?.run {
             player.release()
             release()

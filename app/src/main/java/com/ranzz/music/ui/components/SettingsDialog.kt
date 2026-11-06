@@ -42,6 +42,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -49,9 +50,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.res.stringResource
+import com.ranzz.music.R
+import com.ranzz.music.data.settings.AppLanguage
 import com.ranzz.music.data.settings.AudioQuality
 import com.ranzz.music.data.settings.SettingsManager
 import com.ranzz.music.data.settings.ThemeMode
+import com.ranzz.music.data.update.UpdateInfo
+import com.ranzz.music.data.update.UpdateManager
+import com.ranzz.music.ui.components.UpdateDialog
 import com.ranzz.music.ui.theme.RanzzAppTheme
 import com.ranzz.music.ui.theme.Typography
 import kotlinx.coroutines.launch
@@ -65,10 +72,15 @@ fun SettingsDialog(
     val scope = rememberCoroutineScope()
     val settingsManager = remember { SettingsManager.getInstance() }
     val currentTheme by settingsManager.themeMode.collectAsState()
+    val currentLanguage by settingsManager.language.collectAsState()
     val currentQuality by settingsManager.audioQuality.collectAsState()
     val autoTranslate by settingsManager.autoTranslate.collectAsState()
 
-    var cacheSize by remember { mutableStateOf("Menghitung...") }
+    val calculatingLabel = stringResource(R.string.common_calculating)
+    var cacheSize by remember { mutableStateOf(calculatingLabel) }
+    var isCheckingUpdate by remember { mutableStateOf(false) }
+    var updateStatusMessage by remember { mutableStateOf<String?>(null) }
+    var foundUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     val scrollState = rememberScrollState()
 
     LaunchedEffect(Unit) {
@@ -92,14 +104,13 @@ fun SettingsDialog(
                     .fillMaxWidth()
                     .verticalScroll(scrollState)
             ) {
-                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Pengaturan",
+                        text = stringResource(R.string.settings_title),
                         style = Typography.headlineMedium,
                         fontWeight = FontWeight.Bold,
                         color = colors.textPrimary
@@ -114,7 +125,7 @@ fun SettingsDialog(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Tutup",
+                            contentDescription = stringResource(R.string.action_close),
                             tint = colors.textPrimary,
                             modifier = Modifier.size(18.dp)
                         )
@@ -123,7 +134,6 @@ fun SettingsDialog(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // 1. Audio Quality Section
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = Icons.Outlined.GraphicEq,
@@ -133,7 +143,7 @@ fun SettingsDialog(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Kualitas Audio Streaming",
+                        text = stringResource(R.string.settings_audio_quality),
                         style = Typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = colors.textPrimary
@@ -181,7 +191,7 @@ fun SettingsDialog(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Check,
-                                    contentDescription = "Dipilih",
+                                    contentDescription = stringResource(R.string.common_selected),
                                     tint = colors.background,
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -194,7 +204,6 @@ fun SettingsDialog(
                 HorizontalDivider(color = colors.border, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // 2. Theme Selection
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = Icons.Outlined.Palette,
@@ -204,7 +213,7 @@ fun SettingsDialog(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Tema Tampilan",
+                        text = stringResource(R.string.settings_theme),
                         style = Typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = colors.textPrimary
@@ -214,9 +223,21 @@ fun SettingsDialog(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 val themeOptions = listOf(
-                    Triple(ThemeMode.SYSTEM, "Mengikuti Sistem", "Sesuai tema mode HP kamu"),
-                    Triple(ThemeMode.DARK, "Dark Mode", "Hitam OLED hemat baterai"),
-                    Triple(ThemeMode.LIGHT, "Light Mode", "Putih monokrom bersih")
+                    Triple(
+                        ThemeMode.SYSTEM,
+                        stringResource(R.string.settings_theme_system),
+                        stringResource(R.string.settings_theme_system_desc)
+                    ),
+                    Triple(
+                        ThemeMode.DARK,
+                        stringResource(R.string.settings_theme_dark),
+                        stringResource(R.string.settings_theme_dark_desc)
+                    ),
+                    Triple(
+                        ThemeMode.LIGHT,
+                        stringResource(R.string.settings_theme_light),
+                        stringResource(R.string.settings_theme_light_desc)
+                    )
                 )
 
                 themeOptions.forEach { (mode, title, desc) ->
@@ -258,7 +279,7 @@ fun SettingsDialog(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Check,
-                                    contentDescription = "Dipilih",
+                                    contentDescription = stringResource(R.string.common_selected),
                                     tint = colors.background,
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -271,7 +292,88 @@ fun SettingsDialog(
                 HorizontalDivider(color = colors.border, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // 3. Lyrics Translation Toggle
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Outlined.Translate,
+                        contentDescription = null,
+                        tint = colors.textPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            text = stringResource(R.string.settings_language),
+                            style = Typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_language_desc),
+                            style = Typography.bodySmall,
+                            color = colors.textMuted
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                AppLanguage.values().forEach { lang ->
+                    val isSelected = currentLanguage == lang
+                    val label = when (lang) {
+                        AppLanguage.SYSTEM -> stringResource(R.string.lang_system)
+                        AppLanguage.INDONESIAN -> stringResource(R.string.lang_id)
+                        AppLanguage.ENGLISH -> stringResource(R.string.lang_en)
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isSelected) colors.card else Color.Transparent)
+                            .clickable {
+                                settingsManager.setLanguage(lang)
+                                if (android.os.Build.VERSION.SDK_INT <= android.os.Build.VERSION_CODES.S_V2) {
+                                    var ctx: android.content.Context? = context
+                                    while (ctx is android.content.ContextWrapper && ctx !is android.app.Activity) {
+                                        ctx = ctx.baseContext
+                                    }
+                                    (ctx as? android.app.Activity)?.recreate()
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = label,
+                            style = Typography.bodyMedium,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSelected) colors.textPrimary else colors.textSecondary
+                        )
+
+                        if (isSelected) {
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.accent),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = stringResource(R.string.common_selected),
+                                    tint = colors.background,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+                HorizontalDivider(color = colors.border, thickness = 1.dp)
+                Spacer(modifier = Modifier.height(16.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -287,13 +389,13 @@ fun SettingsDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = "Terjemahan Indonesia Lirik",
+                                text = stringResource(R.string.settings_lyrics_trans),
                                 style = Typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = colors.textPrimary
                             )
                             Text(
-                                text = "Tampilkan arti lirik bahasa Indonesia",
+                                text = stringResource(R.string.settings_lyrics_trans_desc),
                                 style = Typography.bodySmall,
                                 color = colors.textMuted
                             )
@@ -316,7 +418,6 @@ fun SettingsDialog(
                 HorizontalDivider(color = colors.border, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // 4. Storage & Cache
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -332,13 +433,13 @@ fun SettingsDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = "Penyimpanan & Cache",
+                                text = stringResource(R.string.settings_cache),
                                 style = Typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = colors.textPrimary
                             )
                             Text(
-                                text = "Ukuran Cache: $cacheSize",
+                                text = stringResource(R.string.settings_cache_size, cacheSize),
                                 style = Typography.bodySmall,
                                 color = colors.textMuted
                             )
@@ -355,14 +456,14 @@ fun SettingsDialog(
                                     val success = settingsManager.clearCacheAsync()
                                     if (success) {
                                         cacheSize = settingsManager.getFormattedCacheSizeAsync()
-                                        Toast.makeText(context, "Cache berhasil dibersihkan!", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, context.getString(R.string.settings_cache_cleared), Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }
                             .padding(horizontal = 12.dp, vertical = 7.dp)
                     ) {
                         Text(
-                            text = "Bersihkan",
+                            text = stringResource(R.string.settings_cache_clear),
                             style = Typography.labelSmall,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
@@ -373,7 +474,58 @@ fun SettingsDialog(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // 5. About / Version Footer
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.settings_update),
+                            style = Typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.textPrimary
+                        )
+                        Text(
+                            text = updateStatusMessage ?: "v${com.ranzz.music.BuildConfig.VERSION_NAME}",
+                            style = Typography.bodySmall,
+                            color = if (updateStatusMessage != null) colors.accent else colors.textMuted
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(colors.card)
+                            .border(1.dp, colors.border, RoundedCornerShape(20.dp))
+                            .clickable(enabled = !isCheckingUpdate) {
+                                scope.launch {
+                                    isCheckingUpdate = true
+                                    updateStatusMessage = context.getString(R.string.settings_update_checking)
+                                    val update = UpdateManager.getInstance(context).checkForUpdate(force = true)
+                                    isCheckingUpdate = false
+                                    if (update != null) {
+                                        foundUpdateInfo = update
+                                        updateStatusMessage = context.getString(R.string.settings_update_found, update.versionName)
+                                    } else {
+                                        updateStatusMessage = context.getString(R.string.settings_update_latest)
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                    ) {
+                        Text(
+                            text = if (isCheckingUpdate) "…" else stringResource(R.string.settings_update_check),
+                            style = Typography.labelSmall,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = colors.textPrimary
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -394,7 +546,7 @@ fun SettingsDialog(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Ranzz Music v3.4.0 • Media3 & Jetpack Compose",
+                            text = "Ranzz Music v${com.ranzz.music.BuildConfig.VERSION_NAME} • Media3 & Jetpack Compose",
                             style = Typography.labelSmall,
                             fontSize = 11.sp,
                             color = colors.textSecondary
@@ -402,7 +554,7 @@ fun SettingsDialog(
                     }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Open source, zero ads & ultra lightweight",
+                        text = stringResource(R.string.settings_about_desc),
                         style = Typography.labelSmall,
                         fontSize = 10.sp,
                         color = colors.textMuted
@@ -412,5 +564,18 @@ fun SettingsDialog(
                 Spacer(modifier = Modifier.height(8.dp))
             }
         }
+    }
+
+    if (foundUpdateInfo != null) {
+        UpdateDialog(
+            updateInfo = foundUpdateInfo!!,
+            onDownloadClick = {
+                UpdateManager.getInstance(context).startDownloadAndInstall(foundUpdateInfo!!)
+                foundUpdateInfo = null
+            },
+            onDismiss = {
+                foundUpdateInfo = null
+            }
+        )
     }
 }

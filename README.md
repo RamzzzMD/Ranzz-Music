@@ -150,15 +150,15 @@ Ranzz Music dirancang menggunakan standar arsitektur modern Android:
 
 Unduh berkas APK resmi langsung dari halaman **[GitHub Releases](https://github.com/RamzzzMD/Ranzz-Music/releases/latest)**:
 
-🚀 **[Kunjungi Halaman Rilis Resmi (v3.4.0)](https://github.com/RamzzzMD/Ranzz-Music/releases/tag/v3.4.0)**
+🚀 **[Kunjungi Halaman Rilis Resmi (v3.8.4)](https://github.com/RamzzzMD/Ranzz-Music/releases/tag/v3.8.4)**
 
 | Berkas APK | Format | Ukuran | Unduh Langsung (1-Klik) | Keterangan |
 | :--- | :---: | :---: | :---: | :--- |
-| **Ranzz Music Release** | `.apk` | **4.29 MB** | [📥 **Download Ranzz-Music-v3.4.0.apk**](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.4.0/Ranzz-Music-v3.4.0.apk) | *Sangat disarankan.* Versi rilis final dengan optimasi R8 ProGuard (*minified & resources shrunk*), ditandatangani keystore resmi Ranzz Music. Siap pasang langsung di HP. |
-| **Ranzz Music Debug** | `.apk` | **22.22 MB** | [📥 **Download Ranzz-Music-v3.4.0-debug.apk**](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.4.0/Ranzz-Music-v3.4.0-debug.apk) | Versi pengujian debug yang memuat simbol inspeksi lengkap untuk pengembang & logcat. |
+| **Ranzz Music Release** | `.apk` | **4.29 MB** | [📥 **Download Ranzz-Music-v3.8.4.apk**](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.8.4/Ranzz-Music-v3.8.4.apk) | *Sangat disarankan.* Versi rilis final dengan optimasi R8 ProGuard (*minified & resources shrunk*), ditandatangani keystore resmi Ranzz Music. Siap pasang langsung di HP. |
+| **Ranzz Music Debug** | `.apk` | **22.22 MB** | [📥 **Download Ranzz-Music-v3.8.4-debug.apk**](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.8.4/Ranzz-Music-v3.8.4-debug.apk) | Versi pengujian debug yang memuat simbol inspeksi lengkap untuk pengembang & logcat. |
 
 > **📱 Panduan Pasang APK di HP Android:**
-> 1. Klik tautan [Download Ranzz-Music-v3.4.0.apk](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.4.0/Ranzz-Music-v3.4.0.apk) di atas untuk langsung mengunduh file `.apk` ke HP Android Anda.
+> 1. Klik tautan [Download Ranzz-Music-v3.8.4.apk](https://github.com/RamzzzMD/Ranzz-Music/releases/download/v3.8.4/Ranzz-Music-v3.8.4.apk) di atas untuk langsung mengunduh file `.apk` ke HP Android Anda.
 > 2. Buka file hasil unduhan dan pilih **Install**.
 > 3. Jika muncul notifikasi keamanan *"Install unknown apps"*, izinkan akses untuk browser atau file manager Anda.
 

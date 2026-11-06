@@ -25,12 +25,14 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -48,13 +51,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.ranzz.music.R
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.ranzz.music.data.auth.UserAccount
+import androidx.compose.material.icons.outlined.History
 import com.ranzz.music.data.model.Track
 import com.ranzz.music.data.model.HomeSection
 import com.ranzz.music.ui.components.AddToPlaylistDialog
 import com.ranzz.music.ui.components.LoginWebViewDialog
 import com.ranzz.music.ui.components.ProfileMenuSheet
+import com.ranzz.music.ui.components.QueueBottomSheet
 import com.ranzz.music.ui.components.TrackItem
+import com.ranzz.music.ui.components.TrackOptionsBottomSheet
 import com.ranzz.music.ui.theme.DarkBorder
 import com.ranzz.music.ui.theme.DarkCard
 import com.ranzz.music.ui.theme.MutedText
@@ -71,22 +79,31 @@ fun HomeScreen(
 ) {
     val homeSections by viewModel.homeSections.collectAsState()
     val trendingTracks by viewModel.trendingTracks.collectAsState()
-    val searchResults by viewModel.searchResults.collectAsState()
+    val genreTracks by viewModel.genreTracks.collectAsState()
     val isSearching by viewModel.isSearching.collectAsState()
     val isLoadingTrending by viewModel.isLoadingTrending.collectAsState()
     val isLoadingTrack by viewModel.isLoadingTrack.collectAsState()
     val currentTrack by viewModel.currentTrack.collectAsState()
     val currentAccount by viewModel.authState.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
+    val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
     val favoriteIds by remember(favorites) { androidx.compose.runtime.derivedStateOf { favorites.mapTo(HashSet()) { it.id } } }
 
-    var showProfileMenu by remember { mutableStateOf(false) }
-    var showLoginWebView by remember { mutableStateOf(false) }
-    var showSettingsDialog by remember { mutableStateOf(false) }
+    var showProfileMenu by rememberSaveable { mutableStateOf(false) }
+    var showLoginWebView by rememberSaveable { mutableStateOf(false) }
+    var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
+    var showRecentsDialog by rememberSaveable { mutableStateOf(false) }
+    var showQueueSheet by rememberSaveable { mutableStateOf(false) }
     var trackForPlaylist by remember { mutableStateOf<Track?>(null) }
+    var trackForOptions by remember { mutableStateOf<Track?>(null) }
 
-    var selectedGenre by remember { mutableStateOf("Semua") }
+    var selectedGenre by rememberSaveable { mutableStateOf("Semua") }
     val genres = listOf("Semua", "Pop", "Lo-Fi", "Rock", "Acoustic", "Anime", "Hip-Hop", "R&B", "Top Global")
+
+    BackHandler(enabled = selectedGenre != "Semua") {
+        selectedGenre = "Semua"
+        viewModel.loadTrending()
+    }
 
     val colors = com.ranzz.music.ui.theme.RanzzAppTheme.colors
 
@@ -96,55 +113,57 @@ fun HomeScreen(
             .background(colors.background)
             .padding(top = 16.dp)
     ) {
-        // Spotify-Style Top Header: Avatar on the LEFT, and Filter Chips right beside it!
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(top = 2.dp)
         ) {
-            AccountTopButton(
-                account = currentAccount,
-                onClick = { showProfileMenu = true }
-            )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            // Scrollable Spotify-Style Filter Chips (Pills)
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                items(genres) { genre ->
-                    val isSelected = selectedGenre == genre
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(if (isSelected) colors.textPrimary else colors.card)
-                            .border(1.dp, if (isSelected) colors.textPrimary else colors.border, RoundedCornerShape(20.dp))
-                            .clickable {
-                                selectedGenre = genre
-                                if (genre == "Semua") {
-                                    viewModel.loadTrending()
-                                } else {
-                                    viewModel.search("$genre music hits")
+                AccountTopButton(
+                    account = currentAccount,
+                    onClick = { showProfileMenu = true }
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(genres) { genre ->
+                        val isSelected = selectedGenre == genre
+                        val chipBg = if (isSelected) Color(0xFF1ED760) else colors.card
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(chipBg)
+                                .clickable {
+                                    selectedGenre = genre
+                                    if (genre == "Semua") {
+                                        viewModel.loadTrending()
+                                    } else {
+                                        viewModel.loadGenreTracks(genre)
+                                    }
                                 }
-                            }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = genre,
-                            style = Typography.labelMedium.copy(fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium),
-                            fontSize = 13.sp,
-                            color = if (isSelected) colors.background else colors.textPrimary
-                        )
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (genre == "Semua") "All" else genre,
+                                style = Typography.labelMedium.copy(fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium),
+                                fontSize = 13.sp,
+                                color = if (isSelected) Color.Black else colors.textPrimary
+                            )
+                        }
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         if (selectedGenre != "Semua") {
             if (isSearching) {
@@ -154,20 +173,20 @@ fun HomeScreen(
                 ) {
                     CircularProgressIndicator(color = colors.textPrimary)
                 }
-            } else if (searchResults.isEmpty()) {
+            } else if (genreTracks.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Tidak ada lagu ditemukan untuk $selectedGenre",
+                        text = stringResource(R.string.home_no_songs_genre, selectedGenre),
                         style = Typography.bodyMedium,
                         color = colors.textMuted
                     )
                 }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(searchResults, key = { it.id }, contentType = { "track" }) { track ->
+                    items(genreTracks, key = { it.id }, contentType = { "track" }) { track ->
                         val isFav = track.id in favoriteIds
                         TrackItem(
                             track = track.copy(isFavorite = isFav),
@@ -175,7 +194,7 @@ fun HomeScreen(
                             isLoading = isLoadingTrack && currentTrack?.id == track.id,
                             onClick = { viewModel.playTrackFromSearch(track) },
                             onFavoriteClick = { viewModel.toggleFavorite(track) },
-                            onMoreClick = { trackForPlaylist = track }
+                            onMoreClick = { trackForOptions = track }
                         )
                     }
                     item {
@@ -190,8 +209,7 @@ fun HomeScreen(
             ) {
                 CircularProgressIndicator(color = colors.textPrimary)
             }
-        } else if (homeSections.isNotEmpty()) {
-            // YouTube Music Style Shelves (Carousel Rows!)
+        } else if (homeSections.isNotEmpty() || trendingTracks.isNotEmpty()) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize()
             ) {
@@ -199,7 +217,7 @@ fun HomeScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .padding(horizontal = 20.dp, vertical = 6.dp)
                             .aspectRatio(1254f / 547f)
                             .clip(RoundedCornerShape(16.dp))
                             .border(1.dp, colors.border, RoundedCornerShape(16.dp))
@@ -213,12 +231,276 @@ fun HomeScreen(
                     }
                 }
 
+                val homeTracks = trendingTracks.ifEmpty { homeSections.flatMap { it.tracks } }
+
+                val startListeningTracks = (recentlyPlayed.ifEmpty { homeTracks }).distinctBy { it.id }.take(3)
+                if (startListeningTracks.isNotEmpty()) {
+                    item(key = "start_listening_header") {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 4.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.home_start_listening_sub),
+                                style = Typography.bodySmall.copy(fontSize = 12.sp),
+                                color = colors.textMuted
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = stringResource(R.string.home_start_listening),
+                                style = Typography.headlineMedium.copy(fontSize = 22.sp, fontWeight = FontWeight.Bold),
+                                color = colors.textPrimary
+                            )
+                        }
+                    }
+
+                    items(startListeningTracks, key = { "start_listen_${it.id}" }) { track ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.playTrack(track, startListeningTracks) }
+                                .padding(horizontal = 20.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            AsyncImage(
+                                model = track.thumbnailUrlForDisplay(192),
+                                contentDescription = track.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(colors.card)
+                            )
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = track.title,
+                                    style = Typography.titleMedium.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                                    color = colors.textPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = track.artist,
+                                    style = Typography.bodySmall.copy(fontSize = 13.sp),
+                                    color = colors.textMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(
+                                onClick = { trackForOptions = track },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Options",
+                                    tint = colors.textMuted,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                val mixTracks = homeTracks.drop(3).take(8)
+                if (mixTracks.isNotEmpty()) {
+                    item(key = "to_get_you_started_header") {
+                        Text(
+                            text = stringResource(R.string.home_to_get_you_started),
+                            style = Typography.headlineMedium.copy(fontSize = 22.sp, fontWeight = FontWeight.Bold),
+                            color = colors.textPrimary,
+                            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 12.dp)
+                        )
+                    }
+                    item(key = "to_get_you_started_carousel") {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(mixTracks, key = { "mix_${it.id}" }) { track ->
+                                Column(
+                                    modifier = Modifier
+                                        .width(152.dp)
+                                        .clickable { viewModel.playTrack(track, mixTracks) }
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(152.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(colors.card)
+                                    ) {
+                                        AsyncImage(
+                                            model = track.thumbnailUrlForDisplay(512),
+                                            contentDescription = track.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomStart)
+                                                .padding(8.dp)
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(Color(0xFFCCFF00))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "${track.artist.take(12)} Mix",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Black,
+                                                color = Color.Black,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "${track.title} • ${track.artist}",
+                                        style = Typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
+                                        color = colors.textMuted,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val quickPicks = (recentlyPlayed.ifEmpty { homeTracks }).distinctBy { it.id }.take(4)
+                if (quickPicks.isNotEmpty()) {
+                    item(key = "quick_picks_title") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(stringResource(R.string.home_play_again), style = Typography.titleLarge, color = colors.textPrimary)
+                            Text(
+                                text = stringResource(R.string.home_view_all),
+                                style = Typography.bodySmall,
+                                color = colors.textMuted,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { showRecentsDialog = true }
+                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                    item(key = "quick_picks_grid") {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 20.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            quickPicks.chunked(2).forEach { rowTracks ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    rowTracks.forEach { track ->
+                                        Row(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(62.dp)
+                                                .clip(RoundedCornerShape(9.dp))
+                                                .background(colors.card)
+                                                .clickable { viewModel.playTrack(track, quickPicks) },
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            AsyncImage(
+                                                model = track.thumbnailUrlForDisplay(192),
+                                                contentDescription = null,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.size(62.dp)
+                                            )
+                                            Text(
+                                                text = track.title,
+                                                style = Typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = colors.textPrimary,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.padding(horizontal = 9.dp)
+                                            )
+                                        }
+                                    }
+                                    if (rowTracks.size == 1) Spacer(Modifier.weight(1f))
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(22.dp))
+                    }
+                }
+
+                val featuredTrack = homeSections.firstNotNullOfOrNull { it.tracks.firstOrNull() } ?: homeTracks.firstOrNull()
+                if (featuredTrack != null) {
+                    item(key = "featured_title") {
+                        Text(
+                            text = stringResource(R.string.home_picks_for_you),
+                            style = Typography.titleLarge,
+                            color = colors.textPrimary,
+                            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 10.dp)
+                        )
+                    }
+                    item(key = "featured_card") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp)
+                                .height(142.dp)
+                                .clip(RoundedCornerShape(15.dp))
+                                .clickable { viewModel.playTrack(featuredTrack, homeSections.firstOrNull { it.tracks.contains(featuredTrack) }?.tracks ?: homeTracks) }
+                        ) {
+                            AsyncImage(
+                                model = featuredTrack.thumbnailUrlForDisplay(640),
+                                contentDescription = featuredTrack.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(PureBlack.copy(alpha = 0.78f), PureBlack.copy(alpha = 0.05f))))
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(15.dp)
+                                    .fillMaxWidth(0.72f)
+                            ) {
+                                Text(stringResource(R.string.home_mix_personal), style = Typography.labelSmall.copy(fontSize = 9.sp, letterSpacing = 1.2.sp), color = colors.textSecondary)
+                                Text(featuredTrack.title, style = Typography.titleLarge, color = PureWhite, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(featuredTrack.artist, style = Typography.bodySmall, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(15.dp)
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(PureWhite),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_ranzz_play),
+                                    contentDescription = "Putar ${featuredTrack.title}",
+                                    tint = PureBlack,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(22.dp))
+                    }
+                }
+
                 homeSections.forEachIndexed { sIndex, section ->
                     item(key = "header_${sIndex}_${section.title}") {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .padding(horizontal = 20.dp, vertical = 6.dp)
                         ) {
                             Text(
                                 text = section.title,
@@ -240,8 +522,8 @@ fun HomeScreen(
 
                     item(key = "shelf_${sIndex}_${section.title}") {
                         LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(13.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             itemsIndexed(section.tracks, key = { tIndex, track -> "shelf_${sIndex}_${track.id}_$tIndex" }) { _, track ->
@@ -307,6 +589,123 @@ fun HomeScreen(
         )
     }
 
+    if (showRecentsDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showRecentsDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Outlined.History,
+                        contentDescription = null,
+                        tint = colors.textPrimary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = stringResource(R.string.home_recently_played),
+                        style = Typography.titleLarge,
+                        color = colors.textPrimary
+                    )
+                }
+            },
+            text = {
+                if (recentlyPlayed.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.home_no_history),
+                        style = Typography.bodyMedium,
+                        color = colors.textMuted
+                    )
+                } else {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(320.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(recentlyPlayed, key = { it.id }) { track ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(colors.card)
+                                    .clickable {
+                                        viewModel.playTrack(track)
+                                        showRecentsDialog = false
+                                    }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AsyncImage(
+                                    model = track.thumbnailUrlForDisplay(192),
+                                    contentDescription = track.title,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(6.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = track.title,
+                                        style = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = colors.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = track.artist,
+                                        style = Typography.bodySmall,
+                                        color = colors.textMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { showRecentsDialog = false }) {
+                    Text("Tutup", color = colors.textPrimary)
+                }
+            },
+            containerColor = colors.background
+        )
+    }
+
+    if (trackForOptions != null) {
+        TrackOptionsBottomSheet(
+            track = trackForOptions!!,
+            viewModel = viewModel,
+            onDismiss = { trackForOptions = null },
+            onOpenLyrics = {
+                trackForOptions = null
+                viewModel.expandPlayer(true)
+            },
+            onOpenQueue = {
+                trackForOptions = null
+                showQueueSheet = true
+            },
+            onOpenSettings = {
+                trackForOptions = null
+                showSettingsDialog = true
+            },
+            onAddToPlaylist = {
+                val t = trackForOptions
+                trackForOptions = null
+                trackForPlaylist = t
+            }
+        )
+    }
+
+    if (showQueueSheet) {
+        QueueBottomSheet(
+            viewModel = viewModel,
+            onDismiss = { showQueueSheet = false }
+        )
+    }
+
     if (trackForPlaylist != null) {
         AddToPlaylistDialog(
             track = trackForPlaylist!!,
@@ -325,7 +724,7 @@ fun AccountTopButton(
 
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(38.dp)
             .clip(CircleShape)
             .background(colors.card)
             .border(1.dp, if (account != null) colors.textPrimary else colors.border, CircleShape)
@@ -341,16 +740,17 @@ fun AccountTopButton(
                     .fillMaxSize()
                     .clip(CircleShape)
             )
-        } else if (account != null) {
+        } else if (account != null && account.name.isNotBlank()) {
+            val initial = account.name.take(1).uppercase()
             Text(
-                text = account.name.take(1).uppercase(),
-                style = Typography.titleMedium,
+                text = initial,
+                style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 16.sp),
                 color = colors.textPrimary
             )
         } else {
             androidx.compose.foundation.Image(
                 painter = painterResource(R.drawable.logo_monochrome),
-                contentDescription = "Login YouTube",
+                contentDescription = "Ranzz Music Profile",
                 modifier = Modifier.size(24.dp)
             )
         }
@@ -383,7 +783,7 @@ fun YtmMusicCard(
                 .background(colors.card)
         ) {
             AsyncImage(
-                model = track.highResThumbnailUrl,
+                model = track.thumbnailUrlForDisplay(512),
                 contentDescription = track.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

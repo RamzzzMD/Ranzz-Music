@@ -1,5 +1,8 @@
 package com.ranzz.music.ui.screens
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.saveable.rememberSaveable
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,6 +38,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import com.ranzz.music.R
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -47,13 +53,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.ranzz.music.R
 import com.ranzz.music.data.model.Track
 import com.ranzz.music.data.playlist.Playlist
 import com.ranzz.music.ui.components.AddToPlaylistDialog
@@ -73,11 +77,16 @@ fun LibraryScreen(
     val currentTrack by viewModel.currentTrack.collectAsState()
     val currentAccount by viewModel.authState.collectAsState()
 
-    var selectedTab by remember { mutableStateOf(0) } // 0: Liked Songs, 1: Playlists
-    var selectedPlaylistId by remember { mutableStateOf<String?>(null) }
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
+    var selectedPlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
     var trackForPlaylist by remember { mutableStateOf<Track?>(null) }
-    var showCreateDialog by remember { mutableStateOf(false) }
-    var newPlaylistName by remember { mutableStateOf("") }
+    var showCreateDialog by rememberSaveable { mutableStateOf(false) }
+    var playlistToDelete by remember { mutableStateOf<Playlist?>(null) }
+    var newPlaylistName by rememberSaveable { mutableStateOf("") }
+
+    BackHandler(enabled = selectedPlaylistId != null) {
+        selectedPlaylistId = null
+    }
 
     val colors = RanzzAppTheme.colors
     val selectedPlaylist = playlists.firstOrNull { it.id == selectedPlaylistId }
@@ -89,7 +98,6 @@ fun LibraryScreen(
             .padding(top = 16.dp)
     ) {
         if (selectedPlaylist != null) {
-            // Playlist Detail View
             PlaylistDetailView(
                 playlist = selectedPlaylist,
                 viewModel = viewModel,
@@ -99,7 +107,6 @@ fun LibraryScreen(
                 onAddTrackClick = { trackForPlaylist = it }
             )
         } else {
-            // Main Library Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -109,13 +116,13 @@ fun LibraryScreen(
             ) {
                 Column {
                     Text(
-                        text = "Library",
+                        text = stringResource(R.string.lib_playlist_title),
                         style = Typography.headlineLarge,
                         color = colors.textPrimary
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = if (selectedTab == 0) "${favorites.size} Liked Songs" else "${playlists.size} Playlists",
+                        text = if (selectedTab == 0) stringResource(R.string.lib_fav_count, favorites.size) else stringResource(R.string.lib_playlist_count, playlists.size),
                         style = Typography.bodyMedium,
                         color = colors.textMuted
                     )
@@ -139,7 +146,7 @@ fun LibraryScreen(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Sync YT",
+                            text = stringResource(R.string.lib_sync_yt),
                             style = Typography.labelSmall,
                             color = colors.textPrimary,
                             fontSize = 11.sp
@@ -150,7 +157,6 @@ fun LibraryScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Segmented Pills: [ Liked Songs ]  [ Playlists ]
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -175,7 +181,7 @@ fun LibraryScreen(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Liked Songs",
+                            text = stringResource(R.string.lib_tab_favorites),
                             style = Typography.labelMedium.copy(fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Medium),
                             color = if (selectedTab == 0) colors.background else colors.textPrimary
                         )
@@ -192,7 +198,7 @@ fun LibraryScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Playlists (${playlists.size})",
+                        text = stringResource(R.string.lib_tab_my_playlists, playlists.size),
                         style = Typography.labelMedium.copy(fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Medium),
                         color = if (selectedTab == 1) colors.background else colors.textPrimary
                     )
@@ -202,7 +208,6 @@ fun LibraryScreen(
             Spacer(modifier = Modifier.height(14.dp))
 
             if (selectedTab == 0) {
-                // Tab 0: Liked Songs
                 if (favorites.isEmpty()) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
@@ -217,13 +222,13 @@ fun LibraryScreen(
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                text = "Your library is empty",
+                                text = stringResource(R.string.lib_fav_empty),
                                 style = Typography.titleMedium,
                                 color = colors.textPrimary
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Tap the heart icon on any song to save it here",
+                                text = stringResource(R.string.lib_fav_empty_sub),
                                 style = Typography.bodyMedium,
                                 color = colors.textMuted
                             )
@@ -247,10 +252,8 @@ fun LibraryScreen(
                     }
                 }
             } else {
-                // Tab 1: Playlists
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     item {
-                        // Button to create new playlist
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -279,12 +282,12 @@ fun LibraryScreen(
                             Spacer(modifier = Modifier.width(14.dp))
                             Column {
                                 Text(
-                                    text = "Buat Playlist Baru",
+                                    text = stringResource(R.string.lib_create_playlist),
                                     style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = colors.textPrimary
                                 )
                                 Text(
-                                    text = "Kumpulkan lagu sesuai suasana hatimu",
+                                    text = stringResource(R.string.lib_create_playlist_sub),
                                     style = Typography.bodySmall,
                                     color = colors.textMuted
                                 )
@@ -310,13 +313,13 @@ fun LibraryScreen(
                                     )
                                     Spacer(modifier = Modifier.height(12.dp))
                                     Text(
-                                        text = "Belum Ada Playlist",
+                                        text = stringResource(R.string.lib_no_playlists),
                                         style = Typography.titleMedium,
                                         color = colors.textPrimary
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = "Tekan tombol di atas untuk membuat playlist",
+                                        text = stringResource(R.string.lib_no_playlists_sub),
                                         style = Typography.bodyMedium,
                                         color = colors.textMuted
                                     )
@@ -352,10 +355,10 @@ fun LibraryScreen(
                                         color = colors.textMuted
                                     )
                                 }
-                                IconButton(onClick = { viewModel.deletePlaylist(playlist.id) }) {
+                                IconButton(onClick = { playlistToDelete = playlist }) {
                                     Icon(
                                         imageVector = Icons.Default.DeleteOutline,
-                                        contentDescription = "Delete",
+                                        contentDescription = "Hapus Playlist",
                                         tint = colors.textMuted,
                                         modifier = Modifier.size(20.dp)
                                     )
@@ -377,7 +380,7 @@ fun LibraryScreen(
             onDismissRequest = { showCreateDialog = false },
             title = {
                 Text(
-                    text = "Beri Nama Playlist",
+                    text = stringResource(R.string.lib_enter_name),
                     style = Typography.titleLarge,
                     color = colors.textPrimary
                 )
@@ -415,12 +418,53 @@ fun LibraryScreen(
                         contentColor = colors.background
                     )
                 ) {
-                    Text("Buat")
+                    Text(stringResource(R.string.lib_create))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showCreateDialog = false }) {
-                    Text("Batal", color = colors.textMuted)
+                    Text(stringResource(R.string.lib_cancel), color = colors.textMuted)
+                }
+            },
+            containerColor = colors.background
+        )
+    }
+
+    if (playlistToDelete != null) {
+        val targetPlaylist = playlistToDelete!!
+        AlertDialog(
+            onDismissRequest = { playlistToDelete = null },
+            title = {
+                Text(
+                    text = stringResource(R.string.lib_delete_title),
+                    style = Typography.titleLarge,
+                    color = colors.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = stringResource(R.string.lib_delete_confirm, targetPlaylist.name, targetPlaylist.tracks.size),
+                    style = Typography.bodyMedium,
+                    color = colors.textMuted
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deletePlaylist(targetPlaylist.id)
+                        playlistToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = androidx.compose.ui.graphics.Color(0xFFFF3B30),
+                        contentColor = androidx.compose.ui.graphics.Color.White
+                    )
+                ) {
+                    Text(stringResource(R.string.lib_delete), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { playlistToDelete = null }) {
+                    Text(stringResource(R.string.lib_cancel), color = colors.textPrimary)
                 }
             },
             containerColor = colors.background
@@ -449,30 +493,41 @@ fun PlaylistCollageIcon(playlist: Playlist, size: Int = 50) {
         contentAlignment = Alignment.Center
     ) {
         if (tracks.size >= 4) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                Row(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(1.dp),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
                     AsyncImage(
-                        model = tracks[0].highResThumbnailUrl,
+                        model = tracks[0].thumbnailUrlForDisplay(192),
                         contentDescription = null,
                         modifier = Modifier.weight(1f).fillMaxSize(),
                         contentScale = ContentScale.Crop
                     )
                     AsyncImage(
-                        model = tracks[1].highResThumbnailUrl,
+                        model = tracks[1].thumbnailUrlForDisplay(192),
                         contentDescription = null,
                         modifier = Modifier.weight(1f).fillMaxSize(),
                         contentScale = ContentScale.Crop
                     )
                 }
-                Row(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
                     AsyncImage(
-                        model = tracks[2].highResThumbnailUrl,
+                        model = tracks[2].thumbnailUrlForDisplay(192),
                         contentDescription = null,
                         modifier = Modifier.weight(1f).fillMaxSize(),
                         contentScale = ContentScale.Crop
                     )
                     AsyncImage(
-                        model = tracks[3].highResThumbnailUrl,
+                        model = tracks[3].thumbnailUrlForDisplay(192),
                         contentDescription = null,
                         modifier = Modifier.weight(1f).fillMaxSize(),
                         contentScale = ContentScale.Crop
@@ -481,7 +536,7 @@ fun PlaylistCollageIcon(playlist: Playlist, size: Int = 50) {
             }
         } else if (tracks.isNotEmpty()) {
             AsyncImage(
-                model = tracks[0].highResThumbnailUrl,
+                model = tracks[0].thumbnailUrlForDisplay(512),
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
@@ -509,7 +564,6 @@ fun PlaylistDetailView(
     val colors = RanzzAppTheme.colors
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Back Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -606,7 +660,7 @@ fun PlaylistDetailView(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "Playlist ini masih kosong. Tambahkan lagu dari pencarian atau beranda!",
+                            text = stringResource(R.string.lib_playlist_empty),
                             style = Typography.bodyMedium,
                             color = colors.textMuted,
                             modifier = Modifier.padding(horizontal = 32.dp)

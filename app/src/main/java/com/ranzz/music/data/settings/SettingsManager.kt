@@ -2,6 +2,8 @@ package com.ranzz.music.data.settings
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,6 +13,12 @@ import java.io.File
 
 enum class ThemeMode {
     SYSTEM, DARK, LIGHT
+}
+
+enum class AppLanguage(val code: String, val displayName: String) {
+    SYSTEM("", "Ikuti Sistem"),
+    INDONESIAN("in", "Bahasa Indonesia"),
+    ENGLISH("en", "English")
 }
 
 enum class AudioQuality(val title: String, val description: String) {
@@ -25,6 +33,9 @@ class SettingsManager private constructor(private val context: Context) {
 
     private val _themeMode = MutableStateFlow(loadThemeMode())
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
+
+    private val _language = MutableStateFlow(loadLanguage())
+    val language: StateFlow<AppLanguage> = _language.asStateFlow()
 
     private val _audioQuality = MutableStateFlow(loadAudioQuality())
     val audioQuality: StateFlow<AudioQuality> = _audioQuality.asStateFlow()
@@ -41,6 +52,11 @@ class SettingsManager private constructor(private val context: Context) {
         }
     }
 
+    private fun loadLanguage(): AppLanguage {
+        val code = prefs.getString(KEY_LANGUAGE, "") ?: ""
+        return AppLanguage.values().firstOrNull { it.code == code } ?: AppLanguage.SYSTEM
+    }
+
     private fun loadAudioQuality(): AudioQuality {
         val name = prefs.getString(KEY_AUDIO_QUALITY, AudioQuality.HIGH.name) ?: AudioQuality.HIGH.name
         return try {
@@ -53,6 +69,19 @@ class SettingsManager private constructor(private val context: Context) {
     fun setThemeMode(mode: ThemeMode) {
         _themeMode.value = mode
         prefs.edit().putString(KEY_THEME_MODE, mode.name).apply()
+    }
+
+    fun setLanguage(lang: AppLanguage) {
+        _language.value = lang
+        prefs.edit().putString(KEY_LANGUAGE, lang.code).apply()
+        try {
+            val appLocales = if (lang.code.isEmpty()) {
+                LocaleListCompat.getEmptyLocaleList()
+            } else {
+                LocaleListCompat.forLanguageTags(lang.code)
+            }
+            AppCompatDelegate.setApplicationLocales(appLocales)
+        } catch (_: Exception) {}
     }
 
     fun setAudioQuality(quality: AudioQuality) {
@@ -69,6 +98,10 @@ class SettingsManager private constructor(private val context: Context) {
         var total = 0L
         try {
             val cacheDirs = listOf(
+                File(context.cacheDir, "lyrics_cache_v7"),
+                File(context.cacheDir, "lyrics_cache_v6"),
+                File(context.cacheDir, "lyrics_cache_v5"),
+                File(context.cacheDir, "lyrics_cache_v4"),
                 File(context.cacheDir, "lyrics_cache_v3"),
                 File(context.cacheDir, "lyrics_cache_v2"),
                 File(context.cacheDir, "lyrics_cache"),
@@ -109,6 +142,10 @@ class SettingsManager private constructor(private val context: Context) {
     suspend fun clearCacheAsync(): Boolean = withContext(Dispatchers.IO) {
         try {
             val cacheDirs = listOf(
+                File(context.cacheDir, "lyrics_cache_v7"),
+                File(context.cacheDir, "lyrics_cache_v6"),
+                File(context.cacheDir, "lyrics_cache_v5"),
+                File(context.cacheDir, "lyrics_cache_v4"),
                 File(context.cacheDir, "lyrics_cache_v3"),
                 File(context.cacheDir, "lyrics_cache_v2"),
                 File(context.cacheDir, "lyrics_cache"),
@@ -133,6 +170,10 @@ class SettingsManager private constructor(private val context: Context) {
     fun clearCache(): Boolean {
         return try {
             val cacheDirs = listOf(
+                File(context.cacheDir, "lyrics_cache_v7"),
+                File(context.cacheDir, "lyrics_cache_v6"),
+                File(context.cacheDir, "lyrics_cache_v5"),
+                File(context.cacheDir, "lyrics_cache_v4"),
                 File(context.cacheDir, "lyrics_cache_v3"),
                 File(context.cacheDir, "lyrics_cache_v2"),
                 File(context.cacheDir, "lyrics_cache"),
@@ -157,6 +198,7 @@ class SettingsManager private constructor(private val context: Context) {
     companion object {
         private const val PREF_NAME = "ranzz_settings"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_LANGUAGE = "app_language"
         private const val KEY_AUDIO_QUALITY = "audio_quality"
         private const val KEY_AUTO_TRANSLATE = "lyrics_auto_translate"
 

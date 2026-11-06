@@ -3,9 +3,13 @@ package com.ranzz.music.data.recommendation
 import android.content.Context
 import android.content.SharedPreferences
 import com.ranzz.music.data.model.Track
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -13,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 class TasteManager private constructor(context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _recentlyPlayed = MutableStateFlow<List<Track>>(emptyList())
     val recentlyPlayed: StateFlow<List<Track>> = _recentlyPlayed.asStateFlow()
@@ -20,10 +25,12 @@ class TasteManager private constructor(context: Context) {
     private val _onRepeatTracks = MutableStateFlow<List<Track>>(emptyList())
     val onRepeatTracks: StateFlow<List<Track>> = _onRepeatTracks.asStateFlow()
 
-    // In-memory caches to eliminate repeated JSON serialization/deserialization
     private val scoresMap = ConcurrentHashMap<String, Int>()
     private val playsMap = ConcurrentHashMap<String, Int>()
     private val trackDataMap = ConcurrentHashMap<String, Track>()
+
+    @Volatile
+    private var cachedTopArtists: Set<String>? = null
 
     init {
         loadDataFromPrefs()
@@ -57,6 +64,7 @@ class TasteManager private constructor(context: Context) {
     private fun updateTrackScore(track: Track, deltaScore: Int, isPlay: Boolean) {
         val currentScore = scoresMap[track.id] ?: 0
         scoresMap[track.id] = maxOf(0, currentScore + deltaScore)
+        cachedTopArtists = null
 
         if (isPlay) {
             val currentPlays = playsMap[track.id] ?: 0
@@ -65,7 +73,6 @@ class TasteManager private constructor(context: Context) {
 
         trackDataMap[track.id] = track
 
-        // Prune entries if exceeding max limit to prevent unbounded memory/disk growth
         if (trackDataMap.size > MAX_TRACK_ENTRIES) {
             val sortedByScore = scoresMap.entries.sortedBy { it.value }
             val toRemoveCount = trackDataMap.size - MAX_TRACK_ENTRIES
@@ -80,6 +87,22 @@ class TasteManager private constructor(context: Context) {
         persistTasteDataAsync()
     }
 
+    fun removeFromRecents(trackId: String) {
+        val current = _recentlyPlayed.value.toMutableList()
+        current.removeAll { it.id == trackId }
+        _recentlyPlayed.value = current
+        saveRecents(current)
+    }
+
+    fun clearRecents() {
+        _recentlyPlayed.value = emptyList()
+        coroutineScope.launch {
+            try {
+                prefs.edit().remove(KEY_RECENTS).apply()
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun addToRecents(track: Track) {
         val current = _recentlyPlayed.value.toMutableList()
         current.removeAll { it.id == track.id }
@@ -87,21 +110,28 @@ class TasteManager private constructor(context: Context) {
 
         val trimmed = if (current.size > MAX_RECENTS) current.take(MAX_RECENTS) else current
         _recentlyPlayed.value = trimmed
+        saveRecents(trimmed)
+    }
 
-        // Persist recents
-        val arr = JSONArray()
-        for (t in trimmed) {
-            val obj = JSONObject().apply {
-                put("id", t.id)
-                put("url", t.url)
-                put("title", t.title)
-                put("artist", t.artist)
-                put("thumbnailUrl", t.thumbnailUrl)
-                put("durationSeconds", t.durationSeconds)
-            }
-            arr.put(obj)
+    private fun saveRecents(tracks: List<Track>) {
+        val copy = ArrayList(tracks)
+        coroutineScope.launch {
+            try {
+                val arr = JSONArray()
+                for (t in copy) {
+                    val obj = JSONObject().apply {
+                        put("id", t.id)
+                        put("url", t.url)
+                        put("title", t.title)
+                        put("artist", t.artist)
+                        put("thumbnailUrl", t.thumbnailUrl)
+                        put("durationSeconds", t.durationSeconds)
+                    }
+                    arr.put(obj)
+                }
+                prefs.edit().putString(KEY_RECENTS, arr.toString()).apply()
+            } catch (_: Exception) {}
         }
-        prefs.edit().putString(KEY_RECENTS, arr.toString()).apply()
     }
 
     private fun refreshOnRepeat() {
@@ -115,35 +145,42 @@ class TasteManager private constructor(context: Context) {
     }
 
     private fun persistTasteDataAsync() {
-        val scoresJson = JSONObject()
-        scoresMap.forEach { (k, v) -> scoresJson.put(k, v) }
+        val scoresSnapshot = HashMap(scoresMap)
+        val playsSnapshot = HashMap(playsMap)
+        val trackDataSnapshot = HashMap(trackDataMap)
 
-        val playsJson = JSONObject()
-        playsMap.forEach { (k, v) -> playsJson.put(k, v) }
+        coroutineScope.launch {
+            try {
+                val scoresJson = JSONObject()
+                scoresSnapshot.forEach { (k, v) -> scoresJson.put(k, v) }
 
-        val trackDataJson = JSONObject()
-        trackDataMap.forEach { (k, t) ->
-            val obj = JSONObject().apply {
-                put("id", t.id)
-                put("url", t.url)
-                put("title", t.title)
-                put("artist", t.artist)
-                put("thumbnailUrl", t.thumbnailUrl)
-                put("durationSeconds", t.durationSeconds)
-            }
-            trackDataJson.put(k, obj)
+                val playsJson = JSONObject()
+                playsSnapshot.forEach { (k, v) -> playsJson.put(k, v) }
+
+                val trackDataJson = JSONObject()
+                trackDataSnapshot.forEach { (k, t) ->
+                    val obj = JSONObject().apply {
+                        put("id", t.id)
+                        put("url", t.url)
+                        put("title", t.title)
+                        put("artist", t.artist)
+                        put("thumbnailUrl", t.thumbnailUrl)
+                        put("durationSeconds", t.durationSeconds)
+                    }
+                    trackDataJson.put(k, obj)
+                }
+
+                prefs.edit()
+                    .putString(KEY_SCORES, scoresJson.toString())
+                    .putString(KEY_PLAYS, playsJson.toString())
+                    .putString(KEY_TRACK_DATA, trackDataJson.toString())
+                    .apply()
+            } catch (_: Exception) {}
         }
-
-        prefs.edit()
-            .putString(KEY_SCORES, scoresJson.toString())
-            .putString(KEY_PLAYS, playsJson.toString())
-            .putString(KEY_TRACK_DATA, trackDataJson.toString())
-            .apply()
     }
 
     private fun loadDataFromPrefs() {
         try {
-            // 1. Load recents
             val recentsRaw = prefs.getString(KEY_RECENTS, "[]") ?: "[]"
             val recentsArr = JSONArray(recentsRaw)
             val rList = mutableListOf<Track>()
@@ -162,7 +199,6 @@ class TasteManager private constructor(context: Context) {
             }
             _recentlyPlayed.value = rList
 
-            // 2. Load taste maps
             val scoresJson = JSONObject(prefs.getString(KEY_SCORES, "{}") ?: "{}")
             val playsJson = JSONObject(prefs.getString(KEY_PLAYS, "{}") ?: "{}")
             val trackDataJson = JSONObject(prefs.getString(KEY_TRACK_DATA, "{}") ?: "{}")
@@ -210,11 +246,46 @@ class TasteManager private constructor(context: Context) {
         trackDataMap.forEach { (id, track) ->
             val count = playsMap[id] ?: 0
             val artist = track.artist.trim()
-            if (artist.isNotBlank() && count > 0) {
+            if (artist.isNotBlank() && artist != "Unknown Artist" && count > 0) {
                 artistCounts[artist] = (artistCounts[artist] ?: 0) + count
             }
         }
-        return artistCounts.toList().sortedByDescending { it.second }.take(limit)
+        return artistCounts.entries
+            .sortedByDescending { it.value }
+            .take(limit)
+            .map { Pair(it.key, it.value) }
+    }
+
+    /** Artists the user actually interacts with, weighted by taste score (not play count). */
+    private fun topArtistSetByScore(limit: Int): Set<String> {
+        val artistScores = mutableMapOf<String, Int>()
+        scoresMap.forEach { (trackId, score) ->
+            val track = trackDataMap[trackId] ?: return@forEach
+            val artist = track.artist.trim()
+            if (artist.isBlank() || artist == "Unknown Artist" || score <= 0) return@forEach
+            artistScores[artist] = (artistScores[artist] ?: 0) + score
+        }
+        return artistScores.entries
+            .sortedByDescending { it.value }
+            .take(limit)
+            .mapTo(HashSet()) { it.key.lowercase() }
+    }
+
+    /**
+     * Ranks a list of candidate tracks based on user affinities:
+     * - Favored artist (+5 weight)
+     * - High past interaction score
+     * - Heavily penalized if repeatedly skipped
+     */
+    fun rankRadioTracks(candidates: List<Track>): List<Track> {
+        if (candidates.isEmpty()) return candidates
+        val topArtistList = getTopArtists(10).map { it.first }
+
+        return com.ranzz.music.data.native.RanzzNativeCore.rankRadioTracks(
+            candidates = candidates,
+            scores = scoresMap,
+            topArtists = topArtistList
+        )
     }
 
     fun getUniqueArtistsCount(): Int {

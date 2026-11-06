@@ -61,9 +61,9 @@ import com.ranzz.music.viewmodel.MusicViewModel
 fun ProfileMenuSheet(
     account: UserAccount?,
     viewModel: MusicViewModel,
-    onLoginClick: () -> Unit,
-    onLogoutClick: () -> Unit,
-    onOpenSettingsClick: () -> Unit,
+    onLoginClick: () -> Unit = {},
+    onLogoutClick: () -> Unit = {},
+    onOpenSettingsClick: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val colors = RanzzAppTheme.colors
@@ -94,7 +94,6 @@ fun ProfileMenuSheet(
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 36.dp)
         ) {
-            // Profile & Account Card (Spotify-Style Upper Section with Ranzz Banner)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -159,7 +158,6 @@ fun ProfileMenuSheet(
                             }
                         }
 
-                        // Small edit badge over avatar
                         Box(
                             modifier = Modifier
                                 .size(20.dp)
@@ -218,7 +216,6 @@ fun ProfileMenuSheet(
                 HorizontalDivider(color = colors.border, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Action Row (Add Account / Switch / Logout)
                 if (account?.isGoogleLinked == true) {
                     Row(
                         modifier = Modifier
@@ -287,12 +284,10 @@ fun ProfileMenuSheet(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Primary Navigation List (Spotify-Style)
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // 1. Edit Profile (Custom Name & PP)
                 DrawerMenuItem(
                     icon = Icons.Outlined.Edit,
                     title = "Edit Nama & Foto Profil",
@@ -300,7 +295,6 @@ fun ProfileMenuSheet(
                     onClick = { showEditProfileDialog = true }
                 )
 
-                // 2. Listening Stats (Taste Profile)
                 DrawerMenuItem(
                     icon = Icons.Outlined.BarChart,
                     title = "Statistik Mendengarkan",
@@ -308,7 +302,6 @@ fun ProfileMenuSheet(
                     onClick = { showStatsDialog = true }
                 )
 
-                // 3. Recents
                 DrawerMenuItem(
                     icon = Icons.Outlined.History,
                     title = "Terakhir Diputar",
@@ -316,7 +309,6 @@ fun ProfileMenuSheet(
                     onClick = { showRecentsDialog = true }
                 )
 
-                // 4. Settings & Privacy
                 DrawerMenuItem(
                     icon = Icons.Outlined.Settings,
                     title = "Pengaturan & Privasi",
@@ -338,7 +330,6 @@ fun ProfileMenuSheet(
         )
     }
 
-    // Listening Stats Dialog
     if (showStatsDialog) {
         val totalPlays = remember(showStatsDialog) { viewModel.tasteManager.getTotalPlays() }
         val uniqueArtists = remember(showStatsDialog) { viewModel.tasteManager.getUniqueArtistsCount() }
@@ -378,7 +369,6 @@ fun ProfileMenuSheet(
         )
     }
 
-    // Recents Dialog
     if (showRecentsDialog) {
         AlertDialog(
             onDismissRequest = { showRecentsDialog = false },
@@ -427,7 +417,7 @@ fun ProfileMenuSheet(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 AsyncImage(
-                                    model = track.highResThumbnailUrl,
+                                    model = track.thumbnailUrlForDisplay(192),
                                     contentDescription = track.title,
                                     modifier = Modifier
                                         .size(38.dp)
@@ -527,12 +517,10 @@ fun ListeningStatsDiagram(
             .fillMaxWidth()
             .padding(vertical = 4.dp)
     ) {
-        // Summary Metric Tiles
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Tile 1: Total Putar
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -554,7 +542,6 @@ fun ListeningStatsDiagram(
                 )
             }
 
-            // Tile 2: Artis Didengar
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -596,7 +583,6 @@ fun ListeningStatsDiagram(
         } else {
             val maxCount = topArtists.maxOf { it.second }.coerceAtLeast(1)
 
-            // Visual Column Bar Chart
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -624,7 +610,6 @@ fun ListeningStatsDiagram(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Vertical Columns
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -648,7 +633,6 @@ fun ListeningStatsDiagram(
                                 color = colors.textPrimary
                             )
                             Spacer(modifier = Modifier.height(4.dp))
-                            // Bar Track Container
                             Box(
                                 modifier = Modifier
                                     .width(22.dp)
@@ -678,7 +662,6 @@ fun ListeningStatsDiagram(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Detailed Horizontal Progress Distribution
             Text(
                 text = "Peringkat Artis Teratas",
                 style = Typography.labelLarge.copy(fontWeight = FontWeight.Bold),

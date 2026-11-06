@@ -47,7 +47,6 @@ class RanzzDownloader private constructor(context: Context? = null) : Downloader
             )
         }
 
-        // Inject YouTube auth cookies & SAPISID header if user is logged in
         try {
             val auth = com.ranzz.music.data.auth.AuthManager.getInstance()
             val cookie = auth.getCookie()

@@ -1,0 +1,144 @@
+pub mod innertube;
+pub mod liriqo;
+pub mod recommendation;
+pub mod sanitizer;
+pub mod translator;
+
+use jni::objects::{JClass, JString};
+use jni::sys::jstring;
+use jni::JNIEnv;
+
+/** JNI bridge matching package: com.ranzz.music.data.native.RanzzNativeCore */
+
+#[no_mangle]
+pub extern "system" fn Java_com_ranzz_music_data_native_RanzzNativeCore_cleanTrackTitle(
+    mut env: JNIEnv,
+    _class: JClass,
+    raw_title: JString,
+) -> jstring {
+    let input: String = match env.get_string(&raw_title) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("").unwrap().into_raw(),
+    };
+
+    let cleaned = sanitizer::clean_title(&input);
+    env.new_string(cleaned).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_ranzz_music_data_native_RanzzNativeCore_rankCandidates(
+    mut env: JNIEnv,
+    _class: JClass,
+    candidates_json: JString,
+    profile_json: JString,
+) -> jstring {
+    let cand_str: String = match env.get_string(&candidates_json) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("[]").unwrap().into_raw(),
+    };
+
+    let prof_str: String = match env.get_string(&profile_json) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("[]").unwrap().into_raw(),
+    };
+
+    let candidates: Vec<recommendation::CandidateTrack> = match serde_json::from_str(&cand_str) {
+        Ok(c) => c,
+        Err(_) => return env.new_string(&cand_str).unwrap().into_raw(),
+    };
+
+    let profile: recommendation::TasteProfile = match serde_json::from_str(&prof_str) {
+        Ok(p) => p,
+        Err(_) => {
+            return env.new_string(&cand_str).unwrap().into_raw();
+        }
+    };
+
+    let ranked = recommendation::rank_candidates(candidates, &profile);
+    let output = serde_json::to_string(&ranked).unwrap_or_else(|_| "[]".to_string());
+    env.new_string(output).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_ranzz_music_data_native_RanzzNativeCore_parseAutomixTracks(
+    mut env: JNIEnv,
+    _class: JClass,
+    raw_json: JString,
+    current_video_id: JString,
+) -> jstring {
+    let json_str: String = match env.get_string(&raw_json) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("[]").unwrap().into_raw(),
+    };
+
+    let video_id_str: String = match env.get_string(&current_video_id) {
+        Ok(s) => s.into(),
+        Err(_) => String::new(),
+    };
+
+    let tracks = innertube::parse_automix_radio(&json_str, &video_id_str);
+    let output = serde_json::to_string(&tracks).unwrap_or_else(|_| "[]".to_string());
+    env.new_string(output).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_ranzz_music_data_native_RanzzNativeCore_buildDeepLPayload(
+    mut env: JNIEnv,
+    _class: JClass,
+    lines_json: JString,
+    target_lang: JString,
+) -> jstring {
+    let lines_str: String = match env.get_string(&lines_json) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("").unwrap().into_raw(),
+    };
+
+    let lang_str: String = match env.get_string(&target_lang) {
+        Ok(s) => s.into(),
+        Err(_) => "id".to_string(),
+    };
+
+    let lines: Vec<String> = match serde_json::from_str(&lines_str) {
+        Ok(l) => l,
+        Err(_) => Vec::new(),
+    };
+
+    let payload = translator::build_payload(&lines, &lang_str);
+    env.new_string(payload).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_ranzz_music_data_native_RanzzNativeCore_parseDeepLTranslations(
+    mut env: JNIEnv,
+    _class: JClass,
+    response_json: JString,
+) -> jstring {
+    let resp_str: String = match env.get_string(&response_json) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("[]").unwrap().into_raw(),
+    };
+
+    let translations = translator::parse_response(&resp_str);
+    let output = serde_json::to_string(&translations).unwrap_or_else(|_| "[]".to_string());
+    env.new_string(output).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_ranzz_music_data_native_RanzzNativeCore_parseLiriqoLyrics(
+    mut env: JNIEnv,
+    _class: JClass,
+    raw_json: JString,
+    duration_ms: jni::sys::jlong,
+) -> jstring {
+    let json_str: String = match env.get_string(&raw_json) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("").unwrap().into_raw(),
+    };
+
+    let result = liriqo::parse_liriqo_response(&json_str, duration_ms);
+    let output = match result {
+        Some(lyrics) => serde_json::to_string(&lyrics).unwrap_or_default(),
+        None => String::new(),
+    };
+    env.new_string(output).unwrap().into_raw()
+}

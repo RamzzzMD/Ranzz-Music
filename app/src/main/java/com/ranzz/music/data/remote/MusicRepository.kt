@@ -25,22 +25,25 @@ class MusicRepository {
 
     private val service = ServiceList.YouTube
     private val streamUrlCache = LruCache<String, Pair<String, Long>>(50)
-    private val CACHE_EXPIRY_MS = 3 * 60 * 60 * 1000L
+    private val CACHE_EXPIRY_MS = 20 * 60 * 1000L
 
     private var homeCache: Pair<List<HomeSection>, Long>? = null
-    private val HOME_CACHE_TTL = 10 * 60 * 1000L // 10 minutes
+    private val HOME_CACHE_TTL = 10 * 60 * 1000L
 
     private val searchCache = LruCache<String, Pair<List<Track>, Long>>(30)
-    private val SEARCH_CACHE_TTL = 5 * 60 * 1000L // 5 minutes
+    private val SEARCH_CACHE_TTL = 5 * 60 * 1000L
 
     private val radioCache = LruCache<String, Pair<List<Track>, Long>>(20)
-    private val RADIO_CACHE_TTL = 30 * 60 * 1000L // 30 minutes
+    private val RADIO_CACHE_TTL = 30 * 60 * 1000L
+
+    companion object {
+        private const val YTM_CLIENT_NAME = "WEB_REMIX"
+        private const val YTM_CLIENT_VERSION = "1.20241028.01.00"
+        private const val YTM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+    }
 
     private fun cleanTrackTitle(raw: String): String {
-        return raw
-            .replace(Regex("""(?i)\s*[\(\[](?:official\s*(?:music\s*)?video|official\s*audio|music\s*video|lyric\s*video|lyrics|audio|visualizer|remastered|remaster|4k|hd|hq|mv|clip\s*officiel|video\s*oficial)[\)\]]"""), "")
-            .replace(Regex("""(?i)\s*\|\s*(?:official\s*(?:music\s*)?video|official\s*audio|visualizer).*"""), "")
-            .trim()
+        return com.ranzz.music.data.native.RanzzNativeCore.sanitizeTitle(raw)
     }
 
     fun upgradeThumbnailUrl(rawUrl: String): String {
@@ -72,7 +75,10 @@ class MusicRepository {
 
     suspend fun resolveBestThumbnail(track: Track): String = withContext(Dispatchers.IO) {
         val upgraded = upgradeThumbnailUrl(track.thumbnailUrl)
-        if (upgraded.contains("ytimg.com") && track.id.isNotBlank()) {
+        val alreadyHighRes = upgraded.contains("googleusercontent.com") ||
+            upgraded.contains("=w1080") ||
+            upgraded.contains("maxresdefault")
+        if (!alreadyHighRes && upgraded.contains("ytimg.com") && track.id.isNotBlank()) {
             val maxres = "https://i.ytimg.com/vi/${track.id}/maxresdefault.jpg"
             try {
                 val req = okhttp3.Request.Builder()
@@ -81,9 +87,10 @@ class MusicRepository {
                     .header("User-Agent", "Mozilla/5.0")
                     .build()
                 val client = HttpClientProvider.client
-                val resp = client.newCall(req).execute()
-                if (resp.isSuccessful) {
-                    return@withContext maxres
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        return@withContext maxres
+                    }
                 }
             } catch (_: Exception) {}
         }
@@ -117,14 +124,12 @@ class MusicRepository {
             }
         }
 
-        // 1. Prioritize YouTube Music Song Search (Pure Music Tracks!)
         val ytmTracks = searchYouTubeMusic(query)
         if (ytmTracks.isNotEmpty()) {
             synchronized(searchCache) { searchCache.put(q, Pair(ytmTracks, now)) }
             return@withContext ytmTracks
         }
 
-        // 2. Fallback to NewPipe Extractor
         try {
             val searchExtractor = service.getSearchExtractor(
                 query,
@@ -169,8 +174,8 @@ class MusicRepository {
             val payload = org.json.JSONObject().apply {
                 put("context", org.json.JSONObject().apply {
                     put("client", org.json.JSONObject().apply {
-                        put("clientName", "WEB_REMIX")
-                        put("clientVersion", "1.20240101.01.00")
+                        put("clientName", YTM_CLIENT_NAME)
+                        put("clientVersion", YTM_CLIENT_VERSION)
                         put("hl", "id")
                         put("gl", "ID")
                     })
@@ -184,12 +189,12 @@ class MusicRepository {
             val reqBuilder = okhttp3.Request.Builder()
                 .url("$origin/youtubei/v1/search")
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("User-Agent", YTM_USER_AGENT)
                 .header("Origin", origin)
                 .header("Referer", "$origin/")
                 .header("X-Origin", origin)
                 .header("X-YouTube-Client-Name", "67")
-                .header("X-YouTube-Client-Version", "1.20240101.01.00")
+                .header("X-YouTube-Client-Version", YTM_CLIENT_VERSION)
                 .post(reqBody)
 
             if (cookie.isNotBlank()) reqBuilder.header("Cookie", cookie)
@@ -199,7 +204,7 @@ class MusicRepository {
             }
 
             val response = client.newCall(reqBuilder.build()).execute()
-            val jsonStr = response.body?.string() ?: return emptyList()
+            val jsonStr = response.use { it.body?.string() } ?: return emptyList()
             parseYtmSearchTracks(org.json.JSONObject(jsonStr))
         } catch (e: Exception) {
             Log.e("MusicRepository", "YTM Search exception: ${e.message}")
@@ -302,7 +307,6 @@ class MusicRepository {
             return@withContext ytmShelves
         }
 
-        // Fallback: group into categories
         val defaultTracks = searchTracks("Top Global Hits 2026")
         if (defaultTracks.isNotEmpty()) {
             listOf(
@@ -318,11 +322,12 @@ class MusicRepository {
         searchTracks("Top Global Hits 2026")
     }
 
-    suspend fun getRadioTracks(videoId: String): List<Track> = withContext(Dispatchers.IO) {
+    suspend fun getRadioTracks(videoId: String, tunerSetting: String? = null): List<Track> = withContext(Dispatchers.IO) {
         if (videoId.isBlank()) return@withContext emptyList()
+        val cacheKey = if (tunerSetting != null) "${videoId}_$tunerSetting" else videoId
         val now = System.currentTimeMillis()
         synchronized(radioCache) {
-            radioCache.get(videoId)?.let { (cached, time) ->
+            radioCache.get(cacheKey)?.let { (cached, time) ->
                 if (now - time < RADIO_CACHE_TTL) {
                     return@withContext cached
                 }
@@ -337,14 +342,17 @@ class MusicRepository {
             val payload = org.json.JSONObject().apply {
                 put("context", org.json.JSONObject().apply {
                     put("client", org.json.JSONObject().apply {
-                        put("clientName", "WEB_REMIX")
-                        put("clientVersion", "1.20240101.01.00")
+                        put("clientName", YTM_CLIENT_NAME)
+                        put("clientVersion", YTM_CLIENT_VERSION)
                         put("hl", "id")
                         put("gl", "ID")
                     })
                 })
                 put("videoId", videoId)
                 put("playlistId", "RDAMVM$videoId")
+                put("isAudioOnly", true)
+                put("tunerSettingValue", tunerSetting ?: "AUTOMIX_SETTING_NORMAL")
+                put("enablePersistentPlaylistPanel", true)
             }
 
             val client = HttpClientProvider.client
@@ -352,22 +360,33 @@ class MusicRepository {
             val reqBuilder = okhttp3.Request.Builder()
                 .url("$origin/youtubei/v1/next")
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("User-Agent", YTM_USER_AGENT)
                 .header("Origin", origin)
                 .header("Referer", "$origin/")
                 .header("X-Origin", origin)
                 .header("X-YouTube-Client-Name", "67")
-                .header("X-YouTube-Client-Version", "1.20240101.01.00")
+                .header("X-YouTube-Client-Version", YTM_CLIENT_VERSION)
                 .post(reqBody)
 
             if (cookie.isNotBlank()) reqBuilder.header("Cookie", cookie)
             if (!sapisidHash.isNullOrBlank()) {
                 reqBuilder.header("Authorization", sapisidHash)
+                reqBuilder.header("X-Goog-AuthUser", "0")
             }
 
-            val resp = client.newCall(reqBuilder.build()).execute()
-            if (!resp.isSuccessful) return@withContext emptyList()
-            val json = org.json.JSONObject(resp.body?.string().orEmpty())
+            val jsonStr = client.newCall(reqBuilder.build()).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()
+                resp.body?.string().orEmpty()
+            }
+            if (jsonStr.isBlank()) return@withContext emptyList()
+
+            val nativeParsed = com.ranzz.music.data.native.RanzzNativeCore.parseAutomix(jsonStr, videoId)
+            if (nativeParsed != null && nativeParsed.isNotEmpty()) {
+                synchronized(radioCache) { radioCache.put(cacheKey, Pair(nativeParsed, now)) }
+                return@withContext nativeParsed
+            }
+
+            val json = org.json.JSONObject(jsonStr)
             val tabs = json.optJSONObject("contents")
                 ?.optJSONObject("singleColumnMusicWatchNextResultsRenderer")
                 ?.optJSONObject("tabbedRenderer")
@@ -419,7 +438,7 @@ class MusicRepository {
                 )
             }
             if (radioList.isNotEmpty()) {
-                synchronized(radioCache) { radioCache.put(videoId, Pair(radioList, now)) }
+                synchronized(radioCache) { radioCache.put(cacheKey, Pair(radioList, now)) }
             }
             radioList
         } catch (e: Exception) {
@@ -441,8 +460,8 @@ class MusicRepository {
                 val payload = org.json.JSONObject().apply {
                     put("context", org.json.JSONObject().apply {
                         put("client", org.json.JSONObject().apply {
-                            put("clientName", "WEB_REMIX")
-                            put("clientVersion", "1.20240101.01.00")
+                            put("clientName", YTM_CLIENT_NAME)
+                            put("clientVersion", YTM_CLIENT_VERSION)
                             put("hl", "id")
                             put("gl", "ID")
                         })
@@ -452,12 +471,12 @@ class MusicRepository {
                 val reqBuilder = okhttp3.Request.Builder()
                     .url("$origin/youtubei/v1/browse")
                     .header("Content-Type", "application/json")
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .header("User-Agent", YTM_USER_AGENT)
                     .header("Origin", origin)
                     .header("Referer", "$origin/")
                     .header("X-Origin", origin)
                     .header("X-YouTube-Client-Name", "67")
-                    .header("X-YouTube-Client-Version", "1.20240101.01.00")
+                    .header("X-YouTube-Client-Version", YTM_CLIENT_VERSION)
                     .post(payload.toString().toRequestBody("application/json".toMediaType()))
 
                 if (cookie.isNotBlank()) reqBuilder.header("Cookie", cookie)
@@ -466,10 +485,11 @@ class MusicRepository {
                     reqBuilder.header("X-Goog-AuthUser", "0")
                 }
 
-                val resp = client.newCall(reqBuilder.build()).execute()
-                if (resp.isSuccessful) {
-                    val body = resp.body?.string() ?: return null
-                    return org.json.JSONObject(body)
+                client.newCall(reqBuilder.build()).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string() ?: return null
+                        return org.json.JSONObject(body)
+                    }
                 }
                 return null
             }
@@ -672,7 +692,6 @@ class MusicRepository {
             } ?: httpAudios.maxByOrNull { it.averageBitrate } ?: httpAudios.firstOrNull()
 
             val resolved = chosenAudio?.content ?: run {
-                // Fallback to muxed video/audio stream if separate audio stream is unavailable
                 streamInfo.videoStreams
                     .filter { it.content != null && it.content.startsWith("http") }
                     .firstOrNull()?.content
@@ -686,6 +705,17 @@ class MusicRepository {
         } catch (e: Exception) {
             Log.e("MusicRepository", "Failed to get audio stream for $url: ${e.message}", e)
             null
+        }
+    }
+
+    fun evictStreamUrl(songUrl: String) {
+        synchronized(streamUrlCache) {
+            val snapshot = streamUrlCache.snapshot()
+            for (key in snapshot.keys) {
+                if (key == songUrl || key.startsWith("$songUrl#") || snapshot[key]?.first == songUrl) {
+                    streamUrlCache.remove(key)
+                }
+            }
         }
     }
 
@@ -735,8 +765,8 @@ class MusicRepository {
             val payload = org.json.JSONObject().apply {
                 put("context", org.json.JSONObject().apply {
                     put("client", org.json.JSONObject().apply {
-                        put("clientName", "WEB_REMIX")
-                        put("clientVersion", "1.20240101.01.00")
+                        put("clientName", YTM_CLIENT_NAME)
+                        put("clientVersion", YTM_CLIENT_VERSION)
                         put("hl", "en")
                         put("gl", "US")
                     })
@@ -749,12 +779,12 @@ class MusicRepository {
             val reqBuilder = okhttp3.Request.Builder()
                 .url("$origin/youtubei/v1/browse")
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("User-Agent", YTM_USER_AGENT)
                 .header("Origin", origin)
                 .header("Referer", "$origin/")
                 .header("X-Origin", origin)
                 .header("X-YouTube-Client-Name", "67")
-                .header("X-YouTube-Client-Version", "1.20240101.01.00")
+                .header("X-YouTube-Client-Version", YTM_CLIENT_VERSION)
                 .header("Cookie", cookie)
                 .post(reqBody)
 
@@ -763,8 +793,13 @@ class MusicRepository {
             }
 
             val resp = client.newCall(reqBuilder.build()).execute()
-            if (resp.isSuccessful) {
-                val json = org.json.JSONObject(resp.body?.string().orEmpty())
+            val respBody = try {
+                if (resp.isSuccessful) resp.body?.string() else null
+            } finally {
+                resp.close()
+            }
+            if (respBody != null) {
+                val json = org.json.JSONObject(respBody)
                 val contents = json.optJSONObject("contents")
                     ?.optJSONObject("singleColumnBrowseResultsRenderer")
                     ?.optJSONArray("tabs")
@@ -835,7 +870,6 @@ class MusicRepository {
             Log.e("MusicRepository", "Liked songs InnerTube fetch error: ${e.message}", e)
         }
 
-        // Fallback: NewPipe playlist extractor
         try {
             val playlistExtractor = service.getPlaylistExtractor("https://www.youtube.com/playlist?list=LL")
             playlistExtractor.fetchPage()

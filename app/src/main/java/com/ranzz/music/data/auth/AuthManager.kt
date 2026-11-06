@@ -57,7 +57,6 @@ class AuthManager private constructor(private val context: Context) {
         var email = prefs.getString(KEY_EMAIL, "") ?: ""
         var handle = prefs.getString(KEY_HANDLE, "") ?: ""
 
-        // Sanitize if previously saved as raw JSON object string
         if (name.startsWith("{") || name.contains("\"runs\"")) {
             name = parseRawJsonRuns(name).ifBlank { "YouTube User" }
         }
@@ -68,7 +67,6 @@ class AuthManager private constructor(private val context: Context) {
             handle = parseRawJsonRuns(handle)
         }
 
-        // Return account if logged in OR if user has set a custom profile locally
         if (cookie.isNullOrBlank() && !isCustomName && !isCustomAvatar) {
             return null
         }
@@ -158,7 +156,6 @@ class AuthManager private constructor(private val context: Context) {
         )
         _authState.value = initialAccount
 
-        // Fetch detailed profile from InnerTube in background
         CoroutineScope(Dispatchers.IO).launch {
             fetchAccountInfo(cookie)
         }
@@ -245,7 +242,6 @@ class AuthManager private constructor(private val context: Context) {
             val inputStream = context.contentResolver.openInputStream(uri) ?: return null
             val profileDir = File(context.filesDir, "profiles").apply { mkdirs() }
             
-            // Clean up old avatar files to prevent storage leak
             profileDir.listFiles()?.forEach { file ->
                 if (file.name.startsWith("custom_avatar_")) {
                     file.delete()
@@ -292,7 +288,6 @@ class AuthManager private constructor(private val context: Context) {
     }
 
     suspend fun fetchAccountInfo(cookie: String) {
-        // Try YouTube Music first, then YouTube Web fallback
         val success = tryFetchAccountMenu(cookie, isMusic = true)
         if (!success) {
             tryFetchAccountMenu(cookie, isMusic = false)

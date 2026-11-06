@@ -1,6 +1,9 @@
 package com.ranzz.music
 
 import android.app.Application
+import android.content.ComponentCallbacks2
+import android.graphics.Bitmap
+import android.os.Build
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -11,10 +14,19 @@ import com.ranzz.music.data.remote.RanzzDownloader
 import org.schabi.newpipe.extractor.NewPipe
 
 class RanzzMusicApp : Application(), ImageLoaderFactory {
+
     override fun onCreate() {
         super.onCreate()
         AuthManager.init(this)
-        com.ranzz.music.data.settings.SettingsManager.init(this)
+        val settings = com.ranzz.music.data.settings.SettingsManager.init(this)
+        try {
+            val savedLang = settings.language.value
+            if (savedLang.code.isNotEmpty()) {
+                androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(
+                    androidx.core.os.LocaleListCompat.forLanguageTags(savedLang.code)
+                )
+            }
+        } catch (_: Exception) {}
         val downloader = RanzzDownloader.init(this)
         NewPipe.init(downloader)
     }
@@ -23,13 +35,13 @@ class RanzzMusicApp : Application(), ImageLoaderFactory {
         return ImageLoader.Builder(this)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.25)
+                    .maxSizePercent(0.08)
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(50L * 1024 * 1024)
+                    .maxSizeBytes(40L * 1024 * 1024)
                     .build()
             }
             .networkCachePolicy(CachePolicy.ENABLED)

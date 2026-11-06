@@ -127,7 +127,6 @@ fun EditProfileDialog(
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -159,7 +158,6 @@ fun EditProfileDialog(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Avatar Section with Camera Badge
                 Box(
                     modifier = Modifier
                         .size(104.dp)
@@ -194,7 +192,6 @@ fun EditProfileDialog(
                         }
                     }
 
-                    // Overlay Camera Badge at bottom-right
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
@@ -215,7 +212,6 @@ fun EditProfileDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Avatar Action Buttons
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -254,7 +250,6 @@ fun EditProfileDialog(
                     }
                 }
 
-                // Link URL Toggle
                 TextButton(
                     onClick = { showUrlInput = !showUrlInput },
                     shape = RoundedCornerShape(8.dp)
@@ -321,7 +316,6 @@ fun EditProfileDialog(
                 HorizontalDivider(color = colors.border, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Name Input Field
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
                         text = "Nama Tampilan",
@@ -388,7 +382,6 @@ fun EditProfileDialog(
                     }
                 }
 
-                // Account Status & Revert Options
                 if (account?.isGoogleLinked == true) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Box(
@@ -455,7 +448,6 @@ fun EditProfileDialog(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Bottom Buttons
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
