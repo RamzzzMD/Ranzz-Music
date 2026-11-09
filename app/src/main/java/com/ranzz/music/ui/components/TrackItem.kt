@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -27,10 +29,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,6 +67,12 @@ fun TrackItem(
     modifier: Modifier = Modifier
 ) {
     val colors = RanzzAppTheme.colors
+    val context = LocalContext.current
+    val downloadManager = remember(context) { com.ranzz.music.data.download.OfflineDownloadManager.getInstance(context) }
+    val downloadStatuses by downloadManager.downloadStatuses.collectAsState()
+    val downloadProgress by downloadManager.downloadProgress.collectAsState()
+    val dlStatus = downloadStatuses[track.id] ?: com.ranzz.music.data.download.DownloadStatus.NONE
+    val dlProgress = downloadProgress[track.id] ?: 0
 
     Row(
         modifier = modifier
@@ -145,6 +155,48 @@ fun TrackItem(
         )
 
         val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = androidx.compose.material.ripple.rememberRipple(bounded = false, radius = 18.dp),
+                    onClick = {
+                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                        downloadManager.toggleDownload(track)
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            when (dlStatus) {
+                com.ranzz.music.data.download.DownloadStatus.DOWNLOADING -> {
+                    CircularProgressIndicator(
+                        progress = if (dlProgress > 0) dlProgress / 100f else 0.1f,
+                        color = colors.accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> {
+                    Icon(
+                        imageVector = Icons.Default.DownloadDone,
+                        contentDescription = "Downloaded Offline",
+                        tint = Color(0xFF34C759),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                else -> {
+                    Icon(
+                        imageVector = Icons.Outlined.Download,
+                        contentDescription = "Download Offline",
+                        tint = colors.textMuted,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
 
         Box(
             modifier = Modifier

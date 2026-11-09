@@ -32,6 +32,10 @@ Designed with an uncompromising monochrome & dynamic palette aesthetic, studio-q
 
 Pembaruan besar **Ranzz Music v3.8.4** menghadirkan mesin native **Rust (`ranzz-core`)**, sistem lirik multi-sumber **LiriQo**, **Widget Beranda Android**, **Dynamic Album Palette**, serta peningkatan pemutar musik & antrean:
 
+- **📥 Download Lagu & Mode Offline Tanpa Internet (`OfflineDownloadManager`)**
+  - **Unduh Lagu 1-Ketukan**: Tombol download langsung pada setiap baris lagu (`TrackItem`), layar pemutar penuh (`FullPlayerSheet`), dan menu opsi lagu (`TrackOptionsBottomSheet`).
+  - **100% Putar Offline (Audio + Cover + Lirik)**: Menyimpan file audio kualitas tinggi (`.m4a`/`.webm`), sampul album HD, serta lirik tersinkronisasi ke penyimpanan internal agar bisa diputar tanpa kuota/internet sama sekali.
+  - **Tab "Offline" di Library**: Kelola semua lagu yang telah diunduh lengkap dengan informasi ukuran penyimpanan serta tombol **Putar Offline** & **Acak Offline**.
 - **🦀 Ranzz Native Core (`ranzz-core` Rust JNI Engine)**
   - Pemrosesan jaringan InnerTube (`WEB_REMIX`), pencarian lirik paralel, sanitasi metadata, penerjemah lirik, dan perhitungan skor rekomendasi kini dieksekusi secara native di Rust (`arm64-v8a`, `armeabi-v7a`, `x86_64`).
   - **Smart Metadata Sanitizer**: Otomatis membersihkan judul lagu dan nama artis dari tag berlebih seperti `(Official Music Video)`, `[Lyrics]`, `VEVO`, `HD`, dll.

@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Repeat
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.outlined.AddCircleOutline
 import androidx.compose.material.icons.outlined.BluetoothAudio
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Share
@@ -519,10 +521,47 @@ fun FullPlayerSheet(
                     )
                 }
 
+                val downloadStatuses by viewModel.downloadStatuses.collectAsState()
+                val downloadProgress by viewModel.downloadProgress.collectAsState()
+                val dlStatus = downloadStatuses[track.id] ?: com.ranzz.music.data.download.DownloadStatus.NONE
+                val dlProgress = downloadProgress[track.id] ?: 0
+
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    IconButton(
+                        onClick = { viewModel.toggleDownload(track) },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        when (dlStatus) {
+                            com.ranzz.music.data.download.DownloadStatus.DOWNLOADING -> {
+                                CircularProgressIndicator(
+                                    progress = if (dlProgress > 0) dlProgress / 100f else 0.1f,
+                                    color = colors.accent,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> {
+                                Icon(
+                                    imageVector = Icons.Default.DownloadDone,
+                                    contentDescription = "Downloaded Offline",
+                                    tint = Color(0xFF34C759),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            else -> {
+                                Icon(
+                                    imageVector = Icons.Outlined.Download,
+                                    contentDescription = "Download Offline",
+                                    tint = colors.textPrimary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
+
                     IconButton(
                         onClick = {
                             try {

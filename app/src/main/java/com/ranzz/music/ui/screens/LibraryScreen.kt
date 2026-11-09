@@ -26,9 +26,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material3.AlertDialog
@@ -73,6 +75,8 @@ fun LibraryScreen(
 ) {
     val favorites by viewModel.favorites.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
+    val downloadedTracks by viewModel.downloadedTracks.collectAsState()
+    val totalOfflineBytes by viewModel.totalOfflineStorageBytes.collectAsState()
     val isLoadingTrack by viewModel.isLoadingTrack.collectAsState()
     val currentTrack by viewModel.currentTrack.collectAsState()
     val currentAccount by viewModel.authState.collectAsState()
@@ -121,8 +125,16 @@ fun LibraryScreen(
                         color = colors.textPrimary
                     )
                     Spacer(modifier = Modifier.height(2.dp))
+                    val subText = when (selectedTab) {
+                        0 -> stringResource(R.string.lib_fav_count, favorites.size)
+                        1 -> stringResource(R.string.lib_playlist_count, playlists.size)
+                        else -> {
+                            val mb = totalOfflineBytes / (1024f * 1024f)
+                            String.format("%d lagu offline • %.1f MB", downloadedTracks.size, mb)
+                        }
+                    }
                     Text(
-                        text = if (selectedTab == 0) stringResource(R.string.lib_fav_count, favorites.size) else stringResource(R.string.lib_playlist_count, playlists.size),
+                        text = subText,
                         style = Typography.bodyMedium,
                         color = colors.textMuted
                     )
@@ -194,7 +206,7 @@ fun LibraryScreen(
                         .background(if (selectedTab == 1) colors.accent else colors.card)
                         .border(1.dp, if (selectedTab == 1) colors.accent else colors.border, RoundedCornerShape(20.dp))
                         .clickable { selectedTab = 1 }
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -202,6 +214,31 @@ fun LibraryScreen(
                         style = Typography.labelMedium.copy(fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Medium),
                         color = if (selectedTab == 1) colors.background else colors.textPrimary
                     )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(if (selectedTab == 2) colors.accent else colors.card)
+                        .border(1.dp, if (selectedTab == 2) colors.accent else colors.border, RoundedCornerShape(20.dp))
+                        .clickable { selectedTab = 2 }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.DownloadDone,
+                            contentDescription = null,
+                            tint = if (selectedTab == 2) colors.background else colors.textPrimary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Offline (${downloadedTracks.size})",
+                            style = Typography.labelMedium.copy(fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Medium),
+                            color = if (selectedTab == 2) colors.background else colors.textPrimary
+                        )
+                    }
                 }
             }
 
@@ -242,6 +279,95 @@ fun LibraryScreen(
                                 isPlaying = currentTrack?.id == track.id,
                                 isLoading = isLoadingTrack && currentTrack?.id == track.id,
                                 onClick = { viewModel.playTrack(track, favorites) },
+                                onFavoriteClick = { viewModel.toggleFavorite(track) },
+                                onMoreClick = { trackForPlaylist = track }
+                            )
+                        }
+                        item {
+                            Spacer(modifier = Modifier.height(100.dp))
+                        }
+                    }
+                }
+            } else if (selectedTab == 2) {
+                if (downloadedTracks.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(horizontal = 32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Download,
+                                contentDescription = null,
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(56.dp)
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Belum Ada Lagu Offline",
+                                style = Typography.titleMedium,
+                                color = colors.textPrimary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Ketuk ikon unduh (⬇) di samping lagu atau di pemutar musik untuk menyimpan lagu dan mendengarkan tanpa internet.",
+                                style = Typography.bodyMedium,
+                                color = colors.textMuted,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        item {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                            ) {
+                                Button(
+                                    onClick = { viewModel.playTrack(downloadedTracks.first(), downloadedTracks) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = colors.accent,
+                                        contentColor = colors.background
+                                    ),
+                                    shape = RoundedCornerShape(24.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Putar Offline", fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val shuffled = downloadedTracks.shuffled()
+                                        viewModel.playTrack(shuffled.first(), shuffled)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = colors.card,
+                                        contentColor = colors.textPrimary
+                                    ),
+                                    shape = RoundedCornerShape(24.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Acak Offline", fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+
+                        items(downloadedTracks, key = { it.id }, contentType = { "track" }) { track ->
+                            TrackItem(
+                                track = track,
+                                isPlaying = currentTrack?.id == track.id,
+                                isLoading = isLoadingTrack && currentTrack?.id == track.id,
+                                onClick = { viewModel.playTrack(track, downloadedTracks) },
                                 onFavoriteClick = { viewModel.toggleFavorite(track) },
                                 onMoreClick = { trackForPlaylist = track }
                             )

@@ -102,29 +102,34 @@ jobs:
 
             ### ✨ Apa yang Baru di ${{ steps.prep_release.outputs.tag_name }}?
 
-            #### 🦀 1. Ranzz Native Core (Rust JNI Engine)
+            #### 📥 1. Download Lagu & Mode Offline Tanpa Internet (`OfflineDownloadManager`)
+            - **Unduh Lagu 1-Ketukan**: Tombol download langsung pada setiap daftar lagu, layar pemutar penuh, dan menu opsi lagu.
+            - **100% Putar Offline (Audio + Cover + Lirik)**: Menyimpan file audio kualitas tinggi (`.m4a`/`.webm`), sampul album HD, serta lirik tersinkronisasi ke penyimpanan internal agar bisa diputar tanpa kuota/internet sama sekali.
+            - **Tab "Offline" di Library**: Kelola semua lagu yang telah diunduh lengkap dengan informasi ukuran penyimpanan serta tombol **Putar Offline** & **Acak Offline**.
+
+            #### 🦀 2. Ranzz Native Core (Rust JNI Engine)
             - **Mesin Native Rust (`ranzz-core`)**: Pemrosesan jaringan, ekstraksi lirik, sanitasi metadata, dan sistem rekomendasi kini dijalankan secara native di Rust untuk performa instan dan penggunaan RAM super rendah.
             - **InnerTube Native Client**: Klien YouTube Music InnerTube (`WEB_REMIX`) langsung di tingkat native untuk pencarian lagu, rekomendasi beranda, radio automix, dan sinkronisasi *Liked Songs*.
             - **Smart Metadata Sanitizer**: Pembersih judul lagu dan nama artis otomatis dari tag berlebih seperti `(Official Music Video)`, `[Lyrics]`, `VEVO`, `HD`, dll.
 
-            #### 🎤 2. LiriQo Multi-Source Lyrics & Full-Screen Karaoke
+            #### 🎤 3. LiriQo Multi-Source Lyrics & Full-Screen Karaoke
             - **4 Sumber Lirik Paralel (LiriQo Engine)**: Mencari lirik tersinkronisasi secara paralel dari **LRCLIB**, **NetEase Cloud Music**, **Musixmatch**, dan **KuGou** dengan algoritma pencocokan durasi & judul presisi.
             - **Word-by-Word / Syllable Karaoke Sync**: Dukungan lirik karaoke per suku kata (*enhanced LRC & KuGou KRC*) dengan animasi sorotan progresif yang halus.
             - **Full-Screen Lyrics View**: Mode lirik layar penuh imersif dengan latar belakang gradasi warna sampul album (*Dynamic Palette*) dan **Instrumental Break Indicator (`•••`)** saat jeda instrumen.
             - **Terjemahan Lirik Dwibahasa Cepat**: Penerjemah baris lirik paralel langsung dari mesin native Rust.
 
-            #### 📱 3. Android Homescreen Widgets
+            #### 📱 4. Android Homescreen Widgets
             - **Ranzz Compact Widget (4×1)**: Widget bar horizontal minimalis di layar utama HP dengan sampul album, judul lagu, artis, dan tombol Play/Pause & Next.
             - **Ranzz Square Widget (2×2)**: Widget persegi estetik dengan sampul album resolusi tinggi dan kontrol Previous, Play/Pause, serta Next yang tersinkronisasi secara *real-time*.
 
-            #### 🎛️ 4. Peningkatan Pemutar Musik & Manajemen Antrean
+            #### 🎛️ 5. Peningkatan Pemutar Musik & Manajemen Antrean
             - **Dynamic Cover Palette**: Ekstraksi warna dominan dari sampul album secara otomatis menggunakan AndroidX Palette untuk latar belakang pemutar penuh & lirik.
             - **Interactive Queue Sheet (Drag & Drop)**: Atur ulang urutan antrean lagu dengan *drag-and-drop*, lompat ke lagu mana saja, atau bersihkan antrean dengan satu ketukan.
             - **Track Options Bottom Sheet**: Menu aksi cepat untuk *Play Next*, *Add to Queue*, *Add to Playlist*, dan *Share Track*.
             - **Sleep Timer & Playback Speed**: Pengatur waktu tidur otomatis (`15m`, `30m`, `45m`, `60m`) dan pengaturan kecepatan putar (`0.5x` – `2.0x`).
             - **Repeat Mode Lengkap & Swipe Artwork**: Dukungan *Repeat Off*, *Repeat All*, *Repeat One*, serta gestur *swipe* kiri/kanan pada sampul album untuk mengganti lagu.
 
-            #### 🔄 5. In-App Auto Updater & Dukungan Dwibahasa (ID / EN)
+            #### 🔄 6. In-App Auto Updater & Dukungan Dwibahasa (ID / EN)
             - **Pembaruan Langsung di Aplikasi (`UpdateManager`)**: Deteksi otomatis rilis terbaru dari GitHub Releases lengkap dengan dialog *What's New* dan pengunduh/pemasang APK terintegrasi.
             - **Bilingual UI (Bahasa Indonesia & English)**: Pilihan bahasa antarmuka (*Sistem*, *Bahasa Indonesia*, *English*) langsung dari menu Pengaturan, disertai pembaruan profil kustom (*Edit Profile*) dan ikonografi baru.
 

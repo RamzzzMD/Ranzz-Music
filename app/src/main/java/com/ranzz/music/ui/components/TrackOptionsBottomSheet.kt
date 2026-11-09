@@ -15,8 +15,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.AddCircleOutline
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Downloading
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.FormatListBulleted
 import androidx.compose.material.icons.outlined.QueueMusic
@@ -30,6 +33,8 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,6 +68,10 @@ fun TrackOptionsBottomSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val colors = RanzzAppTheme.colors
     val context = LocalContext.current
+    val downloadStatuses by viewModel.downloadStatuses.collectAsState()
+    val downloadProgress by viewModel.downloadProgress.collectAsState()
+    val status = downloadStatuses[track.id] ?: com.ranzz.music.data.download.DownloadStatus.NONE
+    val progress = downloadProgress[track.id] ?: 0
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -145,6 +154,31 @@ fun TrackOptionsBottomSheet(
                 onClick = {
                     onDismiss()
                     onOpenLyrics()
+                }
+            )
+
+            val downloadIcon = when (status) {
+                com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> Icons.Default.DownloadDone
+                com.ranzz.music.data.download.DownloadStatus.DOWNLOADING -> Icons.Outlined.Downloading
+                else -> Icons.Outlined.Download
+            }
+            val downloadTitle = when (status) {
+                com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> "Tersimpan Offline (Hapus Unduhan)"
+                com.ranzz.music.data.download.DownloadStatus.DOWNLOADING -> "Mengunduh Lagu... ($progress%)"
+                else -> "Download Lagu (Offline)"
+            }
+            val downloadTint = when (status) {
+                com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> Color(0xFF34C759)
+                else -> colors.textPrimary
+            }
+
+            TrackOptionItem(
+                icon = downloadIcon,
+                title = downloadTitle,
+                iconTint = downloadTint,
+                onClick = {
+                    viewModel.toggleDownload(track)
+                    onDismiss()
                 }
             )
 

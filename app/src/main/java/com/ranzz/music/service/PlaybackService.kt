@@ -82,7 +82,8 @@ class PlaybackService : MediaSessionService() {
             .setMp4ExtractorFlags(androidx.media3.extractor.mp4.Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS)
             .setFragmentedMp4ExtractorFlags(androidx.media3.extractor.mp4.FragmentedMp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS)
 
-        val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory, extractorsFactory)
+        val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(this, httpDataSourceFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
@@ -257,11 +258,20 @@ class PlaybackService : MediaSessionService() {
     private fun playTrack(track: Track) {
         serviceScope.launch {
             try {
-                val quality = SettingsManager.getInstance().audioQuality.value
-                val repository = MusicRepository()
-                val resolved = withContext(Dispatchers.IO) {
-                    runCatching { repository.getAudioStream(track.url, quality) }.getOrNull()
+                val offlineEntry = com.ranzz.music.data.download.OfflineDownloadManager.getInstance(this@PlaybackService)
+                    .getOfflineEntry(track.id)
+
+                val resolved = if (offlineEntry != null) {
+                    val localUri = Uri.fromFile(java.io.File(offlineEntry.localAudioPath)).toString()
+                    com.ranzz.music.data.remote.ResolvedStream(localUri, offlineEntry.mimeType)
+                } else {
+                    val quality = SettingsManager.getInstance().audioQuality.value
+                    val repository = MusicRepository()
+                    withContext(Dispatchers.IO) {
+                        runCatching { repository.getAudioStream(track.url, quality) }.getOrNull()
+                    }
                 }
+
                 if (resolved == null) {
                     Log.e(TAG, "Failed to resolve stream for ${track.title}")
                     val errorCount = PlayerQueueManager.recordPlaybackFailure()
@@ -274,8 +284,13 @@ class PlaybackService : MediaSessionService() {
                     return@launch
                 }
 
-                val bestThumbnail = withContext(Dispatchers.IO) {
-                    runCatching { repository.resolveBestThumbnail(track) }.getOrDefault(track.thumbnailUrl)
+                val bestThumbnail = if (offlineEntry?.localArtworkPath != null) {
+                    Uri.fromFile(java.io.File(offlineEntry.localArtworkPath)).toString()
+                } else {
+                    val repository = MusicRepository()
+                    withContext(Dispatchers.IO) {
+                        runCatching { repository.resolveBestThumbnail(track) }.getOrDefault(track.thumbnailUrl)
+                    }
                 }
 
                 val updatedTrack = track.copy(
@@ -336,10 +351,18 @@ class PlaybackService : MediaSessionService() {
         serviceScope.launch {
             try {
                 val track = loadPersistedTrack(this@PlaybackService) ?: return@launch
-                if (track.url.isBlank()) return@launch
-                val quality = SettingsManager.getInstance().audioQuality.value
-                val resolved = withContext(Dispatchers.IO) {
-                    runCatching { MusicRepository().getAudioStream(track.url, quality) }.getOrNull()
+                if (track.url.isBlank() && track.id.isBlank()) return@launch
+                val offlineEntry = com.ranzz.music.data.download.OfflineDownloadManager.getInstance(this@PlaybackService)
+                    .getOfflineEntry(track.id)
+
+                val resolved = if (offlineEntry != null) {
+                    val localUri = Uri.fromFile(java.io.File(offlineEntry.localAudioPath)).toString()
+                    com.ranzz.music.data.remote.ResolvedStream(localUri, offlineEntry.mimeType)
+                } else {
+                    val quality = SettingsManager.getInstance().audioQuality.value
+                    withContext(Dispatchers.IO) {
+                        runCatching { MusicRepository().getAudioStream(track.url, quality) }.getOrNull()
+                    }
                 } ?: return@launch
 
                 val metadata = MediaMetadata.Builder()

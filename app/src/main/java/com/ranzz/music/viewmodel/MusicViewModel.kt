@@ -187,6 +187,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         playTrack(initialTrack, list)
     }
 
+    val offlineDownloadManager = com.ranzz.music.data.download.OfflineDownloadManager.getInstance(getApplication())
+    val downloadedTracks = offlineDownloadManager.downloadedTracks
+    val downloadStatuses = offlineDownloadManager.downloadStatuses
+    val downloadProgress = offlineDownloadManager.downloadProgress
+    val totalOfflineStorageBytes = offlineDownloadManager.totalStorageBytes
+
+    fun downloadTrack(track: Track) = offlineDownloadManager.downloadTrack(track)
+    fun removeDownload(trackId: String) = offlineDownloadManager.removeDownload(trackId)
+    fun toggleDownload(track: Track) = offlineDownloadManager.toggleDownload(track)
+    fun isTrackDownloaded(trackId: String): Boolean = offlineDownloadManager.isDownloaded(trackId)
+    fun clearAllDownloads() = offlineDownloadManager.clearAllDownloads()
+
     val lyricsRepository = com.ranzz.music.data.lyrics.LyricsRepository(getApplication())
 
     private val _currentLyrics = MutableStateFlow<com.ranzz.music.data.lyrics.LyricsData?>(null)
@@ -820,8 +832,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
             hasRetriedFallback = false
             trackStartTime = System.currentTimeMillis()
-            val resolvedStream = repository.getAudioStream(track.url, settingsManager.audioQuality.value)
-            val bestThumbnail = repository.resolveBestThumbnail(track)
+            val offlineEntry = offlineDownloadManager.getOfflineEntry(track.id)
+            val resolvedStream = if (offlineEntry != null) {
+                val localUri = Uri.fromFile(java.io.File(offlineEntry.localAudioPath)).toString()
+                com.ranzz.music.data.remote.ResolvedStream(localUri, offlineEntry.mimeType)
+            } else {
+                repository.getAudioStream(track.url, settingsManager.audioQuality.value)
+            }
+            val bestThumbnail = if (offlineEntry?.localArtworkPath != null) {
+                Uri.fromFile(java.io.File(offlineEntry.localArtworkPath)).toString()
+            } else {
+                repository.resolveBestThumbnail(track)
+            }
             if (resolvedStream != null) {
                 val updatedTrack = track.copy(
                     streamUrl = resolvedStream.url,
