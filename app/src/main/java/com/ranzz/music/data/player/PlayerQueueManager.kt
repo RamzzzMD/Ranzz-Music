@@ -60,6 +60,11 @@ object PlayerQueueManager : IPlayerQueueManager {
     private val _consecutiveErrors = MutableStateFlow<Int>(0)
     override val consecutiveErrors: StateFlow<Int> = _consecutiveErrors.asStateFlow()
 
+    @Volatile
+    var isUiControllerActive: Boolean = false
+
+    private var lastAutoAdvanceTimeMs = 0L
+
     fun getInstance(): PlayerQueueManager = this
 
     override fun setQueue(tracks: List<Track>, startIndex: Int) {
@@ -248,6 +253,14 @@ object PlayerQueueManager : IPlayerQueueManager {
     override fun getNextTrack(userInitiated: Boolean, isErrorRecovery: Boolean): Track? {
         synchronized(lock) {
             if (queue.isEmpty()) return null
+
+            val now = System.currentTimeMillis()
+            if (!userInitiated) {
+                if (now - lastAutoAdvanceTimeMs < 1500L) {
+                    return null
+                }
+                lastAutoAdvanceTimeMs = now
+            }
 
             if (_repeatMode.value == Player.REPEAT_MODE_ONE && !userInitiated && !isErrorRecovery) {
                 return _currentTrack.value ?: queue.getOrNull(_currentIndex.value)

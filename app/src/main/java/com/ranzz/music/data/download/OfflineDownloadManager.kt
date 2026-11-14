@@ -475,3 +475,4 @@ class OfflineDownloadManager private constructor(context: Context) {
         }
     }
 }
+

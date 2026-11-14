@@ -24,22 +24,20 @@ data class ResolvedStream(
 class MusicRepository {
 
     private val service = ServiceList.YouTube
-    private val streamUrlCache = LruCache<String, Pair<String, Long>>(50)
     private val CACHE_EXPIRY_MS = 20 * 60 * 1000L
-
-    private var homeCache: Pair<List<HomeSection>, Long>? = null
     private val HOME_CACHE_TTL = 10 * 60 * 1000L
-
-    private val searchCache = LruCache<String, Pair<List<Track>, Long>>(30)
     private val SEARCH_CACHE_TTL = 5 * 60 * 1000L
-
-    private val radioCache = LruCache<String, Pair<List<Track>, Long>>(20)
     private val RADIO_CACHE_TTL = 30 * 60 * 1000L
 
     companion object {
         private const val YTM_CLIENT_NAME = "WEB_REMIX"
         private const val YTM_CLIENT_VERSION = "1.20241028.01.00"
         private const val YTM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
+        private val streamUrlCache = LruCache<String, Pair<String, Long>>(80)
+        private var homeCache: Pair<List<HomeSection>, Long>? = null
+        private val searchCache = LruCache<String, Pair<List<Track>, Long>>(30)
+        private val radioCache = LruCache<String, Pair<List<Track>, Long>>(20)
     }
 
     private fun cleanTrackTitle(raw: String): String {
@@ -651,6 +649,140 @@ class MusicRepository {
         return null
     }
 
+    private fun extractVideoId(urlOrId: String): String {
+        val trimmed = urlOrId.trim()
+        if (trimmed.contains("v=")) {
+            return trimmed.substringAfter("v=").substringBefore("&").substringBefore("#")
+        }
+        if (trimmed.contains("youtu.be/")) {
+            return trimmed.substringAfter("youtu.be/").substringBefore("?").substringBefore("&")
+        }
+        return trimmed
+    }
+
+    private fun fetchInnerTubePlayerStream(
+        videoId: String,
+        quality: com.ranzz.music.data.settings.AudioQuality,
+        preferOpus: Boolean = false
+    ): String? {
+        if (videoId.isBlank()) return null
+        val clients = if (preferOpus) {
+            listOf("IOS", "ANDROID_VR")
+        } else {
+            listOf("ANDROID_VR", "IOS")
+        }
+        for (clientType in clients) {
+            try {
+                val payload = if (clientType == "ANDROID_VR") {
+                    org.json.JSONObject().apply {
+                        put("videoId", videoId)
+                        put("contentCheckOk", true)
+                        put("racyCheckOk", true)
+                        put("context", org.json.JSONObject().apply {
+                            put("client", org.json.JSONObject().apply {
+                                put("clientName", "ANDROID_VR")
+                                put("clientVersion", "1.60.19")
+                                put("androidSdkVersion", 32)
+                                put("osName", "Android")
+                                put("osVersion", "12L")
+                                put("deviceMake", "Oculus")
+                                put("deviceModel", "Quest 3")
+                                put("hl", "en")
+                                put("gl", "US")
+                            })
+                        })
+                    }
+                } else {
+                    org.json.JSONObject().apply {
+                        put("videoId", videoId)
+                        put("contentCheckOk", true)
+                        put("racyCheckOk", true)
+                        put("context", org.json.JSONObject().apply {
+                            put("client", org.json.JSONObject().apply {
+                                put("clientName", "IOS")
+                                put("clientVersion", "19.45.4")
+                                put("deviceMake", "Apple")
+                                put("deviceModel", "iPhone16,2")
+                                put("osName", "iPhone")
+                                put("osVersion", "18.1.0.22B83")
+                                put("hl", "en")
+                                put("gl", "US")
+                            })
+                        })
+                    }
+                }
+
+                val userAgent = if (clientType == "ANDROID_VR") {
+                    "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+                } else {
+                    "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)"
+                }
+
+                val reqBody = payload.toString().toRequestBody("application/json".toMediaType())
+                val req = okhttp3.Request.Builder()
+                    .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+                    .header("Content-Type", "application/json")
+                    .header("User-Agent", userAgent)
+                    .header("X-YouTube-Client-Name", if (clientType == "ANDROID_VR") "28" else "5")
+                    .header("X-YouTube-Client-Version", if (clientType == "ANDROID_VR") "1.60.19" else "19.45.4")
+                    .post(reqBody)
+                    .build()
+
+                val resp = HttpClientProvider.client.newCall(req).execute()
+                val bodyStr = try {
+                    if (resp.isSuccessful) resp.body?.string() else null
+                } finally {
+                    resp.close()
+                } ?: continue
+
+                val root = org.json.JSONObject(bodyStr)
+                val playability = root.optJSONObject("playabilityStatus")?.optString("status", "")
+                if (playability != "OK") continue
+
+                val adaptive = root.optJSONObject("streamingData")?.optJSONArray("adaptiveFormats") ?: continue
+                data class AudioCandidate(val url: String, val mime: String, val bitrate: Int)
+                val candidates = mutableListOf<AudioCandidate>()
+                for (i in 0 until adaptive.length()) {
+                    val fmt = adaptive.optJSONObject(i) ?: continue
+                    val mime = fmt.optString("mimeType", "")
+                    if (!mime.startsWith("audio/")) continue
+                    val streamUrl = fmt.optString("url", "")
+                    if (!streamUrl.startsWith("http")) continue
+                    val bitrate = fmt.optInt("averageBitrate", fmt.optInt("bitrate", 0))
+                    candidates.add(AudioCandidate(streamUrl, mime, bitrate))
+                }
+                if (candidates.isEmpty()) continue
+
+                val picked = when {
+                    preferOpus -> {
+                        candidates.filter { it.mime.contains("webm") || it.mime.contains("opus") }
+                            .maxByOrNull { it.bitrate }
+                            ?: candidates.maxByOrNull { it.bitrate }
+                    }
+                    quality == com.ranzz.music.data.settings.AudioQuality.LOW -> {
+                        candidates.minByOrNull { it.bitrate }
+                    }
+                    quality == com.ranzz.music.data.settings.AudioQuality.MEDIUM -> {
+                        candidates.filter { it.bitrate in 90_000..165_000 }
+                            .minByOrNull { kotlin.math.abs(it.bitrate - 128_000) }
+                            ?: candidates.maxByOrNull { it.bitrate }
+                    }
+                    else -> {
+                        candidates.filter { it.mime.contains("mp4") }
+                            .maxByOrNull { it.bitrate }
+                            ?: candidates.maxByOrNull { it.bitrate }
+                    }
+                }
+                if (picked != null) {
+                    return picked.url
+                }
+            } catch (e: Exception) {
+                Log.w("MusicRepository", "InnerTube $clientType player fallback error: ${e.message}")
+            }
+        }
+        return null
+    }
+
     suspend fun getAudioStreamUrl(
         url: String,
         quality: com.ranzz.music.data.settings.AudioQuality = com.ranzz.music.data.settings.AudioQuality.HIGH
@@ -663,6 +795,15 @@ class MusicRepository {
                     return@withContext cachedUrl
                 }
             }
+        }
+
+        val videoId = extractVideoId(url)
+        val directInnerTubeUrl = fetchInnerTubePlayerStream(videoId, quality, preferOpus = false)
+        if (!directInnerTubeUrl.isNullOrBlank()) {
+            synchronized(streamUrlCache) {
+                streamUrlCache.put(cacheKey, Pair(directInnerTubeUrl, now))
+            }
+            return@withContext directInnerTubeUrl
         }
 
         try {
@@ -719,20 +860,28 @@ class MusicRepository {
         }
     }
 
+    private fun detectMimeTypeFromUrl(streamUrl: String): String? {
+        return when {
+            streamUrl.contains("audio%2Fwebm", ignoreCase = true) ||
+                streamUrl.contains("audio/webm", ignoreCase = true) ||
+                streamUrl.contains("itag=249") ||
+                streamUrl.contains("itag=250") ||
+                streamUrl.contains("itag=251") -> "audio/webm"
+            streamUrl.contains("audio%2Fmp4", ignoreCase = true) ||
+                streamUrl.contains("audio/mp4", ignoreCase = true) ||
+                streamUrl.contains("itag=139") ||
+                streamUrl.contains("itag=140") ||
+                streamUrl.contains("itag=141") -> "audio/mp4"
+            else -> null
+        }
+    }
+
     suspend fun getAudioStream(
         url: String,
         quality: com.ranzz.music.data.settings.AudioQuality = com.ranzz.music.data.settings.AudioQuality.HIGH
     ): ResolvedStream? = withContext(Dispatchers.IO) {
         val streamUrl = getAudioStreamUrl(url, quality) ?: return@withContext null
-        val mime = if (streamUrl.contains("audio%2Fwebm") || streamUrl.contains("audio/webm")) {
-            "audio/webm"
-        } else if (streamUrl.contains("audio%2Fmp4") || streamUrl.contains("audio/mp4") || streamUrl.contains("itag=140") || streamUrl.contains("itag=141") || streamUrl.contains("itag=139")) {
-            "audio/mp4"
-        } else if (quality == com.ranzz.music.data.settings.AudioQuality.HIGH) {
-            "audio/mp4"
-        } else {
-            null
-        }
+        val mime = detectMimeTypeFromUrl(streamUrl)
         ResolvedStream(streamUrl, mime)
     }
 
@@ -747,10 +896,12 @@ class MusicRepository {
                 it.format?.name.equals("webm", ignoreCase = true) ||
                 it.format?.name.equals("opus", ignoreCase = true)
             }.maxByOrNull { it.averageBitrate }
-            opusStream?.content ?: httpAudios.maxByOrNull { it.averageBitrate }?.content
-        } catch (_: Exception) {
-            null
-        }
+            val newPipeUrl = opusStream?.content ?: httpAudios.maxByOrNull { it.averageBitrate }?.content
+            if (!newPipeUrl.isNullOrBlank()) return@withContext newPipeUrl
+        } catch (_: Exception) {}
+
+        val videoId = extractVideoId(url)
+        fetchInnerTubePlayerStream(videoId, com.ranzz.music.data.settings.AudioQuality.HIGH, preferOpus = true)
     }
 
     suspend fun getLikedTracks(): List<Track> = withContext(Dispatchers.IO) {

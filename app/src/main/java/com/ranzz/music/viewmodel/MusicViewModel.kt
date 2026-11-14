@@ -298,6 +298,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        queueManager.isUiControllerActive = true
         initializeMediaController()
         loadTrending()
         viewModelScope.launch {
@@ -377,6 +378,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                             }
                             Player.STATE_READY -> {
+                                hasRetriedFallback = false
                                 queueManager.recordPlaybackSuccess()
                                 _isLoadingTrack.value = false
                                 isSeeking = false
@@ -450,24 +452,19 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e("RanzzMusicViewModel", "Player error: ${error.message}", error)
                         val track = _currentTrack.value
+                        val resumePositionMs = _playbackPosition.value.coerceAtLeast(mediaController?.currentPosition ?: 0L)
                         if (track != null) {
                             try {
                                 repository.evictStreamUrl(track.url)
                             } catch (_: Throwable) {}
                         }
-                        val failureCount = queueManager.recordPlaybackFailure()
-                        if (failureCount >= 3) {
-                            Log.e("RanzzMusicViewModel", "Consecutive playback errors reached limit: $failureCount")
-                            _isLoadingTrack.value = false
-                            _isPlaying.value = false
-                            return
-                        }
-                        if (track != null && track.streamUrl != null && !hasRetriedFallback) {
+                        if (track != null && !hasRetriedFallback) {
                             hasRetriedFallback = true
                             viewModelScope.launch(Dispatchers.IO) {
                                 val fallbackUrl = repository.getFallbackStreamUrl(track.url)
-                                if (fallbackUrl != null && fallbackUrl != track.streamUrl) {
-                                    val fallbackTrack = track.copy(streamUrl = fallbackUrl, mimeType = "audio/webm")
+                                    ?: repository.getAudioStreamUrl(track.url, settingsManager.audioQuality.value)
+                                if (!fallbackUrl.isNullOrBlank() && fallbackUrl != track.streamUrl) {
+                                    val fallbackTrack = track.copy(streamUrl = fallbackUrl, mimeType = null)
                                     withContext(Dispatchers.Main) {
                                         _currentTrack.value = fallbackTrack
                                         queueManager.updateCurrentTrack(fallbackTrack)
@@ -485,28 +482,36 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                                             val item = MediaItem.Builder()
                                                 .setMediaId(fallbackTrack.id)
                                                 .setUri(fallbackUrl)
-                                                .setMimeType("audio/webm")
                                                 .setMediaMetadata(meta)
                                                 .build()
 
                                             ctrl.setMediaItem(item)
                                             ctrl.prepare()
+                                            if (resumePositionMs > 2000L) {
+                                                ctrl.seekTo(resumePositionMs)
+                                            }
                                             ctrl.play()
                                         }
                                     }
                                     return@launch
                                 }
                                 withContext(Dispatchers.Main) {
+                                    val failureCount = queueManager.recordPlaybackFailure()
                                     _isLoadingTrack.value = false
                                     _isPlaying.value = false
-                                    skipNext(userInitiated = false, isErrorRecovery = true)
+                                    if (failureCount < 3) {
+                                        skipNext(userInitiated = false, isErrorRecovery = true)
+                                    }
                                 }
                             }
                         } else {
                             hasRetriedFallback = false
+                            val failureCount = queueManager.recordPlaybackFailure()
                             _isLoadingTrack.value = false
                             _isPlaying.value = false
-                            skipNext(userInitiated = false, isErrorRecovery = true)
+                            if (failureCount < 3) {
+                                skipNext(userInitiated = false, isErrorRecovery = true)
+                            }
                         }
                     }
 
@@ -1068,6 +1073,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        queueManager.isUiControllerActive = false
         try {
             getApplication<Application>().unregisterReceiver(mediaActionReceiver)
         } catch (_: Exception) {}

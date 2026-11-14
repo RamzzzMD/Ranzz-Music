@@ -49,6 +49,8 @@ class PlaybackService : MediaSessionService() {
     @Volatile
     private var restoringSession = false
     private var pauseTimeoutJob: Job? = null
+    private var servicePlayJob: Job? = null
+    private var retriedTrackId: String? = null
 
     companion object {
         private const val TAG = "RanzzPlaybackService"
@@ -74,8 +76,8 @@ class PlaybackService : MediaSessionService() {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0")
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(15_000)
+            .setConnectTimeoutMs(20_000)
+            .setReadTimeoutMs(25_000)
 
         val extractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
@@ -87,10 +89,10 @@ class PlaybackService : MediaSessionService() {
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                15_000,
                 30_000,
-                500,
-                1_500
+                90_000,
+                800,
+                2_000
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -106,11 +108,58 @@ class PlaybackService : MediaSessionService() {
         exoPlayer.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(TAG, "ExoPlayer Error: ${error.message}", error)
+                if (PlayerQueueManager.isUiControllerActive) {
+                    return
+                }
                 val current = PlayerQueueManager.currentTrack.value
+                val resumePositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                 if (current != null) {
                     try {
                         MusicRepository().evictStreamUrl(current.url)
                     } catch (_: Throwable) {}
+
+                    if (retriedTrackId != current.id) {
+                        retriedTrackId = current.id
+                        servicePlayJob?.cancel()
+                        servicePlayJob = serviceScope.launch {
+                            val fallbackUrl = withContext(Dispatchers.IO) {
+                                runCatching { MusicRepository().getFallbackStreamUrl(current.url) }.getOrNull()
+                            }
+                            if (!fallbackUrl.isNullOrBlank()) {
+                                val metadata = MediaMetadata.Builder()
+                                    .setTitle(current.title)
+                                    .setArtist(current.artist)
+                                    .setArtworkUri(Uri.parse(current.highResThumbnailUrl))
+                                    .setDisplayTitle(current.title)
+                                    .setExtras(android.os.Bundle().apply {
+                                        putString(WIDGET_SOURCE_URL_KEY, current.url)
+                                    })
+                                    .build()
+                                val item = MediaItem.Builder()
+                                    .setMediaId(current.id)
+                                    .setUri(fallbackUrl)
+                                    .setMediaMetadata(metadata)
+                                    .build()
+                                player?.run {
+                                    setMediaItem(item)
+                                    prepare()
+                                    if (resumePositionMs > 2000L) {
+                                        seekTo(resumePositionMs)
+                                    }
+                                    playWhenReady = true
+                                }
+                                return@launch
+                            }
+                            val failureCount = PlayerQueueManager.recordPlaybackFailure()
+                            if (failureCount < 3) {
+                                val nextTrack = PlayerQueueManager.getNextTrack(userInitiated = false, isErrorRecovery = true)
+                                if (nextTrack != null) {
+                                    playTrack(nextTrack)
+                                }
+                            }
+                        }
+                        return
+                    }
                 }
                 val failureCount = PlayerQueueManager.recordPlaybackFailure()
                 if (failureCount < 3) {
@@ -123,15 +172,18 @@ class PlaybackService : MediaSessionService() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
+                    retriedTrackId = null
                     PlayerQueueManager.recordPlaybackSuccess()
                 } else if (playbackState == Player.STATE_ENDED) {
-                    val current = PlayerQueueManager.currentTrack.value
-                    if (current != null) {
-                        TasteManager.getInstance(this@PlaybackService).recordTrackPlayed(current)
-                    }
-                    val nextTrack = PlayerQueueManager.getNextTrack(userInitiated = false)
-                    if (nextTrack != null) {
-                        playTrack(nextTrack)
+                    if (!PlayerQueueManager.isUiControllerActive) {
+                        val current = PlayerQueueManager.currentTrack.value
+                        if (current != null) {
+                            TasteManager.getInstance(this@PlaybackService).recordTrackPlayed(current)
+                        }
+                        val nextTrack = PlayerQueueManager.getNextTrack(userInitiated = false)
+                        if (nextTrack != null) {
+                            playTrack(nextTrack)
+                        }
                     }
                 }
                 updatePauseTimeout(exoPlayer)
@@ -184,6 +236,10 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun seekToNext() {
+                if (PlayerQueueManager.isUiControllerActive) {
+                    sendBroadcast(Intent(ACTION_NEXT).setPackage(packageName))
+                    return
+                }
                 val nextTrack = PlayerQueueManager.getNextTrack(userInitiated = true)
                 if (nextTrack != null) {
                     playTrack(nextTrack)
@@ -195,6 +251,10 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun seekToPrevious() {
+                if (PlayerQueueManager.isUiControllerActive) {
+                    sendBroadcast(Intent(ACTION_PREV).setPackage(packageName))
+                    return
+                }
                 val prevTrack = PlayerQueueManager.getPreviousTrack()
                 if (prevTrack != null) {
                     playTrack(prevTrack)
@@ -256,7 +316,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun playTrack(track: Track) {
-        serviceScope.launch {
+        servicePlayJob?.cancel()
+        servicePlayJob = serviceScope.launch {
             try {
                 val offlineEntry = com.ranzz.music.data.download.OfflineDownloadManager.getInstance(this@PlaybackService)
                     .getOfflineEntry(track.id)
