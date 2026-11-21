@@ -13,17 +13,13 @@ import java.util.concurrent.TimeUnit
 
 class RanzzDownloader private constructor(context: Context? = null) : Downloader() {
 
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+    private val client: OkHttpClient = HttpClientProvider.baseClient.newBuilder()
         .apply {
             context?.let { ctx ->
                 val cacheDir = File(ctx.cacheDir, "http_cache")
                 cache(Cache(cacheDir, 30L * 1024 * 1024))
             }
         }
-        .readTimeout(15, TimeUnit.SECONDS)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
         .build()
 
     override fun execute(request: Request): Response {
@@ -47,22 +43,18 @@ class RanzzDownloader private constructor(context: Context? = null) : Downloader
             )
         }
 
+        /*
+         * Only attach user cookies to explicit playlist browse calls (list=LL),
+         * never to /youtubei/v1/player stream extraction where cookies without poToken trigger HTTP 403 / Sabr throttling.
+         */
         try {
-            val auth = com.ranzz.music.data.auth.AuthManager.getInstance()
-            val cookie = auth.getCookie()
-            if (!cookie.isNullOrBlank() && url.contains("youtube.com") && !url.contains("googlevideo.com")) {
-                if (headers["Cookie"] == null && headers["cookie"] == null) {
-                    reqBuilder.header("Cookie", cookie)
-                }
-                if (url.contains("/youtubei/")) {
-                    val origin = if (url.contains("music.youtube.com")) "https://music.youtube.com" else "https://www.youtube.com"
-                    auth.getSapisidHash(origin)?.let { sapisidHash ->
-                        if (headers["Authorization"] == null && headers["authorization"] == null) {
-                            reqBuilder.header("Authorization", sapisidHash)
-                        }
-                        if (headers["x-origin"] == null && headers["X-Origin"] == null) {
-                            reqBuilder.header("x-origin", origin)
-                        }
+            val isPlayerOrStreamCall = url.contains("/youtubei/v1/player") || url.contains("googlevideo.com")
+            if (!isPlayerOrStreamCall && url.contains("list=LL")) {
+                val auth = com.ranzz.music.data.auth.AuthManager.getInstance()
+                val cookie = auth.getCookie()
+                if (!cookie.isNullOrBlank()) {
+                    if (headers["Cookie"] == null && headers["cookie"] == null) {
+                        reqBuilder.header("Cookie", cookie)
                     }
                 }
             }
@@ -74,17 +66,17 @@ class RanzzDownloader private constructor(context: Context? = null) : Downloader
 
         reqBuilder.method(httpMethod, requestBody)
 
-        val response = client.newCall(reqBuilder.build()).execute()
-        val responseBody = response.body?.string() ?: ""
-        val responseHeaders = response.headers.toMultimap()
-
-        return Response(
-            response.code,
-            response.message,
-            responseHeaders,
-            responseBody,
-            response.request.url.toString()
-        )
+        return client.newCall(reqBuilder.build()).execute().use { response ->
+            val responseBody = response.body?.string() ?: ""
+            val responseHeaders = response.headers.toMultimap()
+            Response(
+                response.code,
+                response.message,
+                responseHeaders,
+                responseBody,
+                response.request.url.toString()
+            )
+        }
     }
 
     companion object {

@@ -8,24 +8,33 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.drawable.BitmapDrawable
 import android.view.View
 import android.widget.RemoteViews
+import android.os.Bundle
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
+import com.ranzz.music.data.player.PlayerQueueManager
+import androidx.palette.graphics.Palette
 import coil.Coil
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.ranzz.music.MainActivity
 import com.ranzz.music.R
 import com.ranzz.music.data.model.Track
+import com.ranzz.music.data.remote.MusicRepository
 import com.ranzz.music.service.PlaybackService
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
@@ -37,12 +46,15 @@ private const val KEY_TRACK = "track"
 private const val KEY_PLAYING = "playing"
 private const val KEY_POSITION = "position"
 private const val KEY_DURATION = "duration"
+private const val KEY_REPEAT_MODE = "repeat_mode"
 
 private object WidgetRenderer {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     @Volatile private var artworkLoadedFor: String? = null
     @Volatile private var artworkLoadInProgressFor: String? = null
+    @Volatile private var artworkJob: Job? = null
     @Volatile private var cachedArtworkBitmap: Bitmap? = null
+    @Volatile private var cachedAccentColor: Int = Color.parseColor("#1E1F24")
 
     fun update(context: Context) {
         try {
@@ -60,16 +72,18 @@ private object WidgetRenderer {
 
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val track = prefs.getString(KEY_TRACK, null)?.let(::decodeTrack)
+        if (track != null && artworkLoadedFor != track.id) {
+            cachedArtworkBitmap = null
+            cachedAccentColor = Color.parseColor("#1E1F24")
+        }
+        val repeatMode = prefs.getInt(KEY_REPEAT_MODE, Player.REPEAT_MODE_OFF)
         compactIds.forEach { id ->
-            render(context, manager, id, false, track, prefs.getBoolean(KEY_PLAYING, false), prefs.getLong(KEY_POSITION, 0), prefs.getLong(KEY_DURATION, 0))
+            render(context, manager, id, false, track, prefs.getBoolean(KEY_PLAYING, false), prefs.getLong(KEY_POSITION, 0), prefs.getLong(KEY_DURATION, 0), repeatMode)
         }
         squareIds.forEach { id ->
-            render(context, manager, id, true, track, prefs.getBoolean(KEY_PLAYING, false), prefs.getLong(KEY_POSITION, 0), prefs.getLong(KEY_DURATION, 0))
+            render(context, manager, id, true, track, prefs.getBoolean(KEY_PLAYING, false), prefs.getLong(KEY_POSITION, 0), prefs.getLong(KEY_DURATION, 0), repeatMode)
         }
         track?.let {
-            if (artworkLoadedFor != it.id) {
-                cachedArtworkBitmap = null
-            }
             if (artworkLoadedFor != it.id && artworkLoadInProgressFor != it.id) {
                 artworkLoadInProgressFor = it.id
                 loadArtwork(context, manager, compact, square, it)
@@ -77,7 +91,25 @@ private object WidgetRenderer {
         }
     }
 
-    private fun render(context: Context, manager: AppWidgetManager, id: Int, square: Boolean, track: Track?, playing: Boolean, position: Long, duration: Long) {
+    private fun resolveWidgetDimensions(context: Context, manager: AppWidgetManager, id: Int, square: Boolean): Triple<Int, Int, Float> {
+        val options = try { manager.getAppWidgetOptions(id) } catch (_: Exception) { null }
+        val defaultW = if (square) 320 else 340
+        val defaultH = if (square) 156 else 92
+        val minW = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)?.takeIf { it > 0 } ?: defaultW
+        val maxW = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, 0)?.takeIf { it > 0 } ?: minW
+        val minH = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)?.takeIf { it > 0 } ?: defaultH
+        val maxH = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0)?.takeIf { it > 0 } ?: minH
+        val widthDp = ((minW + maxW) / 2f).coerceIn(140f, 520f)
+        val heightDp = ((minH + maxH) / 2f).coerceIn(64f, 420f)
+        val rawDensity = context.resources.displayMetrics.density.coerceIn(1.5f, 3.0f)
+        val scale = rawDensity.coerceAtMost(2.25f)
+        val widthPx = (widthDp * scale).toInt().coerceAtLeast(220)
+        val heightPx = (heightDp * scale).toInt().coerceAtLeast(110)
+        val cornerRadiusPx = 24f * scale
+        return Triple(widthPx, heightPx, cornerRadiusPx)
+    }
+
+    private fun render(context: Context, manager: AppWidgetManager, id: Int, square: Boolean, track: Track?, playing: Boolean, position: Long, duration: Long, repeatMode: Int) {
         val views = RemoteViews(context.packageName, if (square) R.layout.widget_ranzz_square else R.layout.widget_ranzz_compact)
         val open = Intent(context, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -89,12 +121,19 @@ private object WidgetRenderer {
         views.setTextViewText(R.id.widget_title, title)
         views.setTextViewText(R.id.widget_artist, artist)
         val currentCached = cachedArtworkBitmap
+        val (wPx, hPx, radiusPx) = resolveWidgetDimensions(context, manager, id, square)
         if (currentCached != null && artworkLoadedFor == track?.id) {
+            views.setInt(R.id.widget_art, "setBackgroundResource", 0)
             views.setImageViewBitmap(R.id.widget_art, currentCached)
+            val backdrop = renderGradientBackdrop(wPx, hPx, radiusPx, cachedAccentColor)
+            views.setImageViewBitmap(R.id.widget_bg_art, backdrop)
         } else {
+            views.setInt(R.id.widget_art, "setBackgroundResource", R.drawable.widget_art_background)
             views.setImageViewResource(R.id.widget_art, R.drawable.widget_art_background)
+            val defaultBackdrop = renderGradientBackdrop(wPx, hPx, radiusPx, Color.parseColor("#18181D"))
+            views.setImageViewBitmap(R.id.widget_bg_art, defaultBackdrop)
         }
-        views.setTextViewText(R.id.widget_play, if (playing) "Ⅱ" else "▶")
+        views.setImageViewResource(R.id.widget_play, if (playing) R.drawable.ic_ranzz_pause else R.drawable.ic_ranzz_play)
         views.setContentDescription(R.id.widget_play, context.getString(R.string.widget_play_desc))
         views.setContentDescription(R.id.widget_previous, context.getString(R.string.widget_previous_desc))
         views.setContentDescription(R.id.widget_next, context.getString(R.string.widget_next_desc))
@@ -104,14 +143,25 @@ private object WidgetRenderer {
         if (!square) {
             val options = manager.getAppWidgetOptions(id)
             val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
-            val showPrevious = minWidth == 0 || minWidth >= 300
+            val showPrevious = minWidth == 0 || minWidth >= 260
             views.setViewVisibility(R.id.widget_previous, if (showPrevious) View.VISIBLE else View.GONE)
             if (showPrevious) setAction(context, views, R.id.widget_previous, RanzzWidgetActionReceiver.ACTION_PREVIOUS, id * 10 + 3)
         }
         if (square) {
-            views.setTextViewText(R.id.widget_favorite, if (track?.isFavorite == true) "♥" else "♡")
+            views.setImageViewResource(
+                R.id.widget_favorite,
+                if (track?.isFavorite == true) R.drawable.ic_widget_heart_filled else R.drawable.ic_widget_heart_outline
+            )
+            val repeatRes = when (repeatMode) {
+                Player.REPEAT_MODE_ONE -> R.drawable.ic_notif_repeat_one
+                Player.REPEAT_MODE_ALL -> R.drawable.ic_notif_repeat_all
+                else -> R.drawable.ic_notif_repeat_off
+            }
+            views.setImageViewResource(R.id.widget_repeat, repeatRes)
+            views.setContentDescription(R.id.widget_repeat, context.getString(R.string.widget_repeat_desc))
             setAction(context, views, R.id.widget_previous, RanzzWidgetActionReceiver.ACTION_PREVIOUS, id * 10 + 3)
             setAction(context, views, R.id.widget_favorite, RanzzWidgetActionReceiver.ACTION_FAVORITE, id * 10 + 4)
+            setAction(context, views, R.id.widget_repeat, RanzzWidgetActionReceiver.ACTION_REPEAT, id * 10 + 5)
         }
         manager.updateAppWidget(id, views)
     }
@@ -133,44 +183,121 @@ private object WidgetRenderer {
     }
 
     private fun loadArtwork(context: Context, manager: AppWidgetManager, compact: ComponentName, square: ComponentName, track: Track) {
-        scope.launch(Dispatchers.IO) {
+        artworkJob?.cancel()
+        artworkJob = scope.launch(Dispatchers.IO) {
             try {
-                val request = ImageRequest.Builder(context).data(track.thumbnailUrlForDisplay(256)).allowHardware(false).build()
+                val localThumb = com.ranzz.music.data.offline.OfflineMusicManager.getInstance(context).getLocalThumbnailUri(track.id)
+                val request = ImageRequest.Builder(context).data(localThumb ?: track.thumbnailUrlForDisplay(256)).allowHardware(false).build()
                 val result = Coil.imageLoader(context).execute(request) as? SuccessResult
                 val bitmap = (result?.drawable as? BitmapDrawable)?.bitmap
                 if (bitmap == null) {
-                    artworkLoadInProgressFor = null
+                    if (artworkLoadInProgressFor == track.id) artworkLoadInProgressFor = null
+                    return@launch
+                }
+                val currentPersistedId = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString(KEY_TRACK, null)?.let(::decodeTrack)?.id
+                if (currentPersistedId != null && currentPersistedId != track.id) {
+                    if (artworkLoadInProgressFor == track.id) artworkLoadInProgressFor = null
                     return@launch
                 }
                 val rounded = roundedBitmap(bitmap)
+                val accentColor = extractWidgetAccentColor(bitmap)
                 cachedArtworkBitmap = rounded
+                cachedAccentColor = accentColor
                 artworkLoadedFor = track.id
                 val compactIds = manager.getAppWidgetIds(compact)
                 val squareIds = manager.getAppWidgetIds(square)
                 (compactIds + squareIds).forEach { id ->
                     if (context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_TRACK, null)?.let(::decodeTrack)?.id != track.id) return@forEach
                     val isSquare = id in squareIds
+                    val (wPx, hPx, radiusPx) = resolveWidgetDimensions(context, manager, id, isSquare)
                     val views = RemoteViews(context.packageName, if (isSquare) R.layout.widget_ranzz_square else R.layout.widget_ranzz_compact)
+                    views.setInt(R.id.widget_art, "setBackgroundResource", 0)
                     views.setImageViewBitmap(R.id.widget_art, rounded)
+                    views.setImageViewBitmap(R.id.widget_bg_art, renderGradientBackdrop(wPx, hPx, radiusPx, accentColor))
                     manager.partiallyUpdateAppWidget(id, views)
                 }
-                artworkLoadInProgressFor = null
+                if (artworkLoadInProgressFor == track.id) artworkLoadInProgressFor = null
             } catch (_: Exception) {
-                artworkLoadInProgressFor = null
+                if (artworkLoadInProgressFor == track.id) artworkLoadInProgressFor = null
             }
         }
     }
 
+    private fun extractWidgetAccentColor(source: Bitmap): Int {
+        return try {
+            val palette = Palette.from(source).maximumColorCount(12).generate()
+            palette.darkVibrantSwatch?.rgb
+                ?: palette.dominantSwatch?.rgb
+                ?: palette.mutedSwatch?.rgb
+                ?: Color.parseColor("#1E1F24")
+        } catch (_: Exception) {
+            Color.parseColor("#1E1F24")
+        }
+    }
+
+    private fun renderGradientBackdrop(width: Int, height: Int, cornerRadius: Float, accentRgb: Int): Bitmap {
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        val r = (Color.red(accentRgb) * 0.44f).toInt().coerceIn(12, 115)
+        val g = (Color.green(accentRgb) * 0.44f).toInt().coerceIn(12, 115)
+        val b = (Color.blue(accentRgb) * 0.44f).toInt().coerceIn(14, 125)
+        val startColor = Color.argb(248, r, g, b)
+        val midColor = Color.argb(250, (r * 0.45f).toInt().coerceAtLeast(10), (g * 0.45f).toInt().coerceAtLeast(10), (b * 0.45f).toInt().coerceAtLeast(13))
+        val endColor = Color.argb(252, 10, 10, 13)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG).apply {
+            shader = LinearGradient(
+                0f,
+                0f,
+                width.toFloat(),
+                height.toFloat(),
+                intArrayOf(startColor, midColor, endColor),
+                floatArrayOf(0f, 0.55f, 1f),
+                Shader.TileMode.CLAMP
+            )
+        }
+        val rect = RectF(0f, 0f, width.toFloat(), height.toFloat())
+        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
+        val strokeWidthPx = 2.2f
+        val inset = strokeWidthPx * 0.5f
+        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = strokeWidthPx
+            color = Color.argb(46, (r + 95).coerceAtMost(255), (g + 95).coerceAtMost(255), (b + 95).coerceAtMost(255))
+        }
+        canvas.drawRoundRect(
+            RectF(inset, inset, width - inset, height - inset),
+            (cornerRadius - inset).coerceAtLeast(0f),
+            (cornerRadius - inset).coerceAtLeast(0f),
+            strokePaint
+        )
+        return output
+    }
+
     private fun roundedBitmap(source: Bitmap): Bitmap {
-        val output = Bitmap.createBitmap(160, 160, Bitmap.Config.RGB_565)
+        val size = 192
+        val radius = 38f
+        val output = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val shader = android.graphics.BitmapShader(source, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP)
-        val scale = maxOf(160f / source.width, 160f / source.height)
-        val matrix = android.graphics.Matrix().apply { setScale(scale, scale) }
+        val scale = maxOf(size.toFloat() / source.width, size.toFloat() / source.height)
+        val dx = (size.toFloat() - source.width * scale) * 0.5f
+        val dy = (size.toFloat() - source.height * scale) * 0.5f
+        val matrix = android.graphics.Matrix().apply {
+            setScale(scale, scale)
+            postTranslate(dx, dy)
+        }
         shader.setLocalMatrix(matrix)
         paint.shader = shader
-        canvas.drawRoundRect(RectF(0f, 0f, 160f, 160f), 24f, 24f, paint)
+        val rect = RectF(0f, 0f, size.toFloat(), size.toFloat())
+        canvas.drawRoundRect(rect, radius, radius, paint)
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 1.5f
+            color = Color.argb(38, 255, 255, 255)
+        }
+        canvas.drawRoundRect(RectF(0.75f, 0.75f, size - 0.75f, size - 0.75f), radius - 0.75f, radius - 0.75f, borderPaint)
         return output
     }
 }
@@ -194,6 +321,7 @@ class RanzzWidgetActionReceiver : android.content.BroadcastReceiver() {
         const val ACTION_NEXT = "com.ranzz.music.widget.NEXT"
         const val ACTION_PREVIOUS = "com.ranzz.music.widget.PREVIOUS"
         const val ACTION_FAVORITE = "com.ranzz.music.widget.FAVORITE"
+        const val ACTION_REPEAT = "com.ranzz.music.widget.REPEAT"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -215,17 +343,21 @@ class RanzzWidgetActionReceiver : android.content.BroadcastReceiver() {
             } catch (_: Exception) {}
         }
 
-        handler.postDelayed({ finishOnce() }, 2500L)
-
         val future = try {
             val token = SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java))
             MediaController.Builder(appContext, token).buildAsync()
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Unable to build MediaController: ${e.message}")
-            handler.removeCallbacksAndMessages(null)
             finishOnce()
             return
         }
+
+        handler.postDelayed({
+            try {
+                MediaController.releaseFuture(future)
+            } catch (_: Exception) {}
+            finishOnce()
+        }, 2500L)
 
         future.addListener({
             try {
@@ -237,18 +369,24 @@ class RanzzWidgetActionReceiver : android.content.BroadcastReceiver() {
                     ACTION_NEXT -> {
                         if (controller.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)) {
                             controller.seekToNextMediaItem()
-                        } else if (controller.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT)) {
+                        } else {
                             controller.seekToNext()
                         }
                     }
                     ACTION_PREVIOUS -> {
                         if (controller.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)) {
                             controller.seekToPreviousMediaItem()
-                        } else if (controller.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS)) {
+                        } else {
                             controller.seekToPrevious()
                         }
                     }
                     ACTION_FAVORITE -> toggleFavorite(appContext, controller)
+                    ACTION_REPEAT -> {
+                        controller.sendCustomCommand(
+                            SessionCommand(PlaybackService.CUSTOM_ACTION_REPEAT, Bundle.EMPTY),
+                            Bundle.EMPTY
+                        )
+                    }
                 }
                 persist(appContext, controller)
             } catch (e: Exception) {
@@ -262,32 +400,47 @@ class RanzzWidgetActionReceiver : android.content.BroadcastReceiver() {
                     finishOnce()
                 }, 350L)
             }
-        }, MoreExecutors.directExecutor())
+        }, androidx.core.content.ContextCompat.getMainExecutor(appContext))
     }
 
     private fun toggleFavorite(context: Context, controller: MediaController) {
-        val metadata = controller.currentMediaItem?.mediaMetadata ?: return
+        val persisted = loadPersistedTrack(context)
+        val metadata = controller.currentMediaItem?.mediaMetadata
+        val id = controller.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() } ?: persisted?.id ?: return
         val prefs = context.getSharedPreferences("ranzz_favorites", Context.MODE_PRIVATE)
         val array = try { org.json.JSONArray(prefs.getString("fav_list", "[]")) } catch (_: Exception) { org.json.JSONArray() }
-        val id = controller.currentMediaItem?.mediaId ?: return
         val match = (0 until array.length()).firstOrNull { array.optJSONObject(it)?.optString("id") == id }
+        val isNowLiked = match == null
         if (match != null) {
             val next = org.json.JSONArray()
             for (index in 0 until array.length()) if (index != match) next.put(array.getJSONObject(index))
             prefs.edit().putString("fav_list", next.toString()).apply()
         } else {
-            array.put(org.json.JSONObject().apply {
+            val newEntry = org.json.JSONObject().apply {
                 put("id", id)
-                put("url", metadata.extras?.getString(WIDGET_SOURCE_URL_KEY)
-                    ?: controller.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty())
-                put("title", metadata.title?.toString().orEmpty())
-                put("artist", metadata.artist?.toString().orEmpty())
-                put("thumbnailUrl", metadata.artworkUri?.toString().orEmpty())
-                put("durationSeconds", (controller.duration.coerceAtLeast(0) / 1000L))
-            })
-            prefs.edit().putString("fav_list", array.toString()).apply()
+                put("url", metadata?.extras?.getString(WIDGET_SOURCE_URL_KEY)
+                    ?: controller.currentMediaItem?.localConfiguration?.uri?.toString()
+                    ?: persisted?.url.orEmpty())
+                put("title", metadata?.title?.toString() ?: persisted?.title.orEmpty())
+                put("artist", metadata?.artist?.toString() ?: persisted?.artist.orEmpty())
+                put("thumbnailUrl", metadata?.artworkUri?.toString() ?: persisted?.thumbnailUrl.orEmpty())
+                put("durationSeconds", (controller.duration.takeIf { it > 0 }?.div(1000L)) ?: persisted?.durationSeconds ?: 0L)
+            }
+            val next = org.json.JSONArray()
+            next.put(newEntry)
+            for (index in 0 until array.length()) next.put(array.getJSONObject(index))
+            prefs.edit().putString("fav_list", next.toString()).apply()
+        }
+        if (persisted != null && persisted.id == id) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_TRACK, encodeTrack(persisted.copy(isFavorite = isNowLiked)))
+                .apply()
         }
         context.sendBroadcast(Intent(WIDGET_FAVORITES_CHANGED).setPackage(context.packageName))
+        WidgetRenderer.scope.launch(Dispatchers.IO) {
+            MusicRepository.getInstance().setTrackLikeStatus(id, isLiked = isNowLiked)
+        }
     }
 }
 
@@ -310,7 +463,9 @@ internal fun persist(context: Context, controller: Player) {
     }
     prefs.edit().putBoolean(KEY_PLAYING, controller.playWhenReady)
         .putLong(KEY_POSITION, controller.currentPosition.coerceAtLeast(0))
-        .putLong(KEY_DURATION, controller.duration.coerceAtLeast(0)).apply()
+        .putLong(KEY_DURATION, controller.duration.coerceAtLeast(0))
+        .putInt(KEY_REPEAT_MODE, PlayerQueueManager.repeatMode.value)
+        .apply()
 }
 
 private fun isFavorite(context: Context, id: String): Boolean {
@@ -330,7 +485,6 @@ private fun decodeTrack(raw: String): Track? = try {
 
 fun updateRanzzWidgets(context: Context) = WidgetRenderer.update(context)
 
-/** Last track persisted by the player, used to restore playback after the service is recreated. */
 fun loadPersistedTrack(context: Context): Track? =
     context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         .getString(KEY_TRACK, null)

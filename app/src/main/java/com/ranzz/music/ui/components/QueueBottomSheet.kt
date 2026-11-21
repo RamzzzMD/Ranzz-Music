@@ -1,10 +1,15 @@
 package com.ranzz.music.ui.components
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -12,13 +17,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Equalizer
@@ -32,10 +38,18 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -47,6 +61,7 @@ import com.ranzz.music.data.model.Track
 import com.ranzz.music.ui.theme.RanzzAppTheme
 import com.ranzz.music.ui.theme.Typography
 import com.ranzz.music.viewmodel.MusicViewModel
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,8 +85,23 @@ fun QueueBottomSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.78f)
-                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .padding(horizontal = 20.dp, vertical = 12.dp)
         ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(38.dp)
+                        .height(4.dp)
+                        .clip(CircleShape)
+                        .background(colors.textMuted.copy(alpha = 0.36f))
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -110,9 +140,9 @@ fun QueueBottomSheet(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     val upcomingTracks = if (currentIndex >= 0 && currentIndex + 1 < queueTracks.size) {
-                        queueTracks.subList(currentIndex + 1, queueTracks.size)
+                        queueTracks.mapIndexed { idx, t -> idx to t }.subList(currentIndex + 1, queueTracks.size)
                     } else if (currentIndex < 0) {
-                        queueTracks.filter { it.id != currentTrack?.id }
+                        queueTracks.mapIndexed { idx, t -> idx to t }.filter { (_, t) -> t.id != currentTrack?.id }
                     } else {
                         emptyList()
                     }
@@ -132,7 +162,7 @@ fun QueueBottomSheet(
                             QueueItemRow(
                                 track = nowPlaying,
                                 isCurrent = true,
-                                onClick = {}
+                                onClick = { onDismiss() }
                             )
                             Spacer(modifier = Modifier.height(14.dp))
                         }
@@ -147,7 +177,7 @@ fun QueueBottomSheet(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "BERIKUTNYA DALAM ANTREAN",
+                                text = stringResource(R.string.player_queue_up_next),
                                 style = Typography.labelSmall.copy(
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
@@ -161,7 +191,7 @@ fun QueueBottomSheet(
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = "Hapus Antrean",
+                                        text = stringResource(R.string.player_queue_clear),
                                         style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                         color = colors.accent
                                     )
@@ -173,15 +203,14 @@ fun QueueBottomSheet(
                     if (upcomingTracks.isEmpty()) {
                         item {
                             Text(
-                                text = "Lagu berikutnya akan dipilih secara otomatis (Radio Mix).",
+                                text = stringResource(R.string.player_queue_auto_radio),
                                 style = Typography.bodySmall,
                                 color = colors.textSecondary,
                                 modifier = Modifier.padding(vertical = 12.dp)
                             )
                         }
                     } else {
-                        itemsIndexed(upcomingTracks) { relativeIndex, track ->
-                            val actualIndex = (if (currentIndex >= 0) currentIndex + 1 else 0) + relativeIndex
+                        itemsIndexed(upcomingTracks, key = { idx, pair -> "${pair.second.id}_${pair.first}_$idx" }) { relativeIndex, (actualIndex, track) ->
                             val canMoveUp = relativeIndex > 0
                             val canMoveDown = relativeIndex < upcomingTracks.size - 1
 
@@ -219,94 +248,158 @@ private fun QueueItemRow(
     onRemove: (() -> Unit)? = null
 ) {
     val colors = RanzzAppTheme.colors
+    val haptic = LocalHapticFeedback.current
+    var dragOffsetX by remember { mutableFloatStateOf(0f) }
 
-    Row(
+    val animatedSwipeX by animateFloatAsState(
+        targetValue = dragOffsetX,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "queue_item_swipe"
+    )
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(if (isCurrent) colors.card else colors.background)
-            .clickable { onClick() }
-            .padding(8.dp),
-        verticalAlignment = Alignment.CenterVertically
     ) {
-        AsyncImage(
-            model = track.thumbnailUrlForDisplay(120),
-            contentDescription = track.title,
-            modifier = Modifier
-                .size(46.dp)
-                .clip(RoundedCornerShape(6.dp)),
-            contentScale = ContentScale.Crop
-        )
-
-        Spacer(modifier = Modifier.width(12.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = track.title,
-                style = Typography.titleMedium.copy(
-                    fontSize = 14.sp,
-                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold
-                ),
-                color = colors.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = track.artist,
-                style = Typography.bodySmall.copy(fontSize = 12.sp),
-                color = colors.textMuted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        if (!isCurrent && onRemove != null && abs(animatedSwipeX) > 10f) {
+            val badgeAlpha = (abs(animatedSwipeX) / 90f).coerceIn(0f, 1f)
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(Color(0xFFFF3B30).copy(alpha = 0.18f * badgeAlpha))
+                    .padding(horizontal = 14.dp),
+                contentAlignment = if (animatedSwipeX > 0f) Alignment.CenterStart else Alignment.CenterEnd
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = null,
+                    tint = Color(0xFFFF3B30).copy(alpha = badgeAlpha),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
 
-        if (isCurrent) {
-            Icon(
-                imageVector = Icons.Outlined.Equalizer,
-                contentDescription = "Now Playing",
-                tint = colors.textPrimary,
-                modifier = Modifier.size(20.dp).padding(end = 4.dp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer {
+                    translationX = animatedSwipeX * 0.5f
+                }
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (isCurrent) colors.card else colors.background)
+                .clickable { onClick() }
+                .then(
+                    if (!isCurrent && onRemove != null) {
+                        val latestOnRemove by androidx.compose.runtime.rememberUpdatedState(onRemove)
+                        Modifier.pointerInput(track.id) {
+                            detectHorizontalDragGestures(
+                                onDragStart = { dragOffsetX = 0f },
+                                onDragEnd = {
+                                    if (abs(dragOffsetX) > 95f) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        dragOffsetX = 0f
+                                        latestOnRemove()
+                                    } else {
+                                        dragOffsetX = 0f
+                                    }
+                                },
+                                onDragCancel = { dragOffsetX = 0f },
+                                onHorizontalDrag = { change, dragAmount ->
+                                    dragOffsetX = (dragOffsetX + dragAmount).coerceIn(-180f, 180f)
+                                    change.consume()
+                                }
+                            )
+                        }
+                    } else {
+                        Modifier
+                    }
+                )
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AsyncImage(
+                model = track.thumbnailUrlForDisplay(120),
+                contentDescription = track.title,
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(6.dp)),
+                contentScale = ContentScale.Crop
             )
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (onMoveUp != null) {
-                    IconButton(
-                        onClick = onMoveUp,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.KeyboardArrowUp,
-                            contentDescription = "Move Up",
-                            tint = colors.textMuted,
-                            modifier = Modifier.size(20.dp)
-                        )
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = Typography.titleMedium.copy(
+                        fontSize = 14.sp,
+                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold
+                    ),
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = track.artist,
+                    style = Typography.bodySmall.copy(fontSize = 12.sp),
+                    color = colors.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (isCurrent) {
+                Icon(
+                    imageVector = Icons.Outlined.Equalizer,
+                    contentDescription = "Now Playing",
+                    tint = colors.textPrimary,
+                    modifier = Modifier.size(20.dp).padding(end = 4.dp)
+                )
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onMoveUp != null) {
+                        IconButton(
+                            onClick = onMoveUp,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowUp,
+                                contentDescription = "Move Up",
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
-                }
-                if (onMoveDown != null) {
-                    IconButton(
-                        onClick = onMoveDown,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Move Down",
-                            tint = colors.textMuted,
-                            modifier = Modifier.size(20.dp)
-                        )
+                    if (onMoveDown != null) {
+                        IconButton(
+                            onClick = onMoveDown,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Move Down",
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
-                }
-                if (onRemove != null) {
-                    IconButton(
-                        onClick = onRemove,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Remove",
-                            tint = colors.textMuted,
-                            modifier = Modifier.size(18.dp)
-                        )
+                    if (onRemove != null) {
+                        IconButton(
+                            onClick = onRemove,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Remove",
+                                tint = colors.textMuted,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
             }

@@ -5,8 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.Bitmap
-import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -20,12 +18,17 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import coil.Coil
-import coil.request.ImageRequest
-import coil.request.SuccessResult
+import com.ranzz.music.data.model.CommentsResult
 import com.ranzz.music.data.model.HomeSection
+import com.ranzz.music.data.model.PlaylistBrowseDetails
 import com.ranzz.music.data.model.Track
+import com.ranzz.music.data.model.YtmComment
+import com.ranzz.music.data.cache.HistoryStore
+import com.ranzz.music.data.cache.UiSnapshot
+import com.ranzz.music.data.cache.UiStateCache
+import com.ranzz.music.data.offline.OfflineMusicManager
 import com.ranzz.music.data.player.PlayerQueueManager
+import com.ranzz.music.data.settings.AudioSubQuality
 import com.ranzz.music.data.remote.MusicRepository
 import com.ranzz.music.service.PlaybackService
 import com.ranzz.music.widget.WIDGET_FAVORITES_CHANGED
@@ -34,7 +37,6 @@ import com.ranzz.music.widget.persist
 import com.ranzz.music.widget.updateRanzzWidgets
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
-import java.io.ByteArrayOutputStream
 import java.util.Collections
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -49,7 +51,7 @@ import org.json.JSONObject
 
 class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = MusicRepository()
+    private val repository = MusicRepository.getInstance()
     private val queueManager = PlayerQueueManager.getInstance()
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var mediaController: MediaController? = null
@@ -65,6 +67,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _playbackPosition = MutableStateFlow(0L)
     val playbackPosition = _playbackPosition.asStateFlow()
+
+    private val _bufferedPosition = MutableStateFlow(0L)
+    val bufferedPosition = _bufferedPosition.asStateFlow()
+
+    private val _restoredPage = MutableStateFlow(0)
+    val restoredPage = _restoredPage.asStateFlow()
 
     private val _duration = MutableStateFlow(0L)
     val duration = _duration.asStateFlow()
@@ -84,15 +92,36 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _genreTracks = MutableStateFlow<List<Track>>(emptyList())
     val genreTracks: StateFlow<List<Track>> = _genreTracks.asStateFlow()
 
+    private val _genreSections = MutableStateFlow<List<HomeSection>>(emptyList())
+    val genreSections: StateFlow<List<HomeSection>> = _genreSections.asStateFlow()
+
     private val _isLoadingGenre = MutableStateFlow(false)
     val isLoadingGenre: StateFlow<Boolean> = _isLoadingGenre.asStateFlow()
+
+    private val _activeBrowseDetails = MutableStateFlow<PlaylistBrowseDetails?>(null)
+    val activeBrowseDetails: StateFlow<PlaylistBrowseDetails?> = _activeBrowseDetails.asStateFlow()
+
+    private val _isLoadingBrowseDetails = MutableStateFlow(false)
+    val isLoadingBrowseDetails: StateFlow<Boolean> = _isLoadingBrowseDetails.asStateFlow()
+
+    private val _trackComments = MutableStateFlow(CommentsResult())
+    val trackComments: StateFlow<CommentsResult> = _trackComments.asStateFlow()
+
+    private val _isLoadingComments = MutableStateFlow(false)
+    val isLoadingComments: StateFlow<Boolean> = _isLoadingComments.asStateFlow()
+
+    private val _isPostingComment = MutableStateFlow(false)
+    val isPostingComment: StateFlow<Boolean> = _isPostingComment.asStateFlow()
+
+    private val _relatedTracks = MutableStateFlow<List<Track>>(emptyList())
+    val relatedTracks: StateFlow<List<Track>> = _relatedTracks.asStateFlow()
 
     private val _suggestions = MutableStateFlow<List<String>>(emptyList())
     val suggestions = _suggestions.asStateFlow()
 
     private val favPrefs = getApplication<Application>().getSharedPreferences("ranzz_favorites", Context.MODE_PRIVATE)
 
-    private val _favorites = MutableStateFlow<List<Track>>(loadStoredFavorites())
+    private val _favorites = MutableStateFlow<List<Track>>(emptyList())
     val favorites = _favorites.asStateFlow()
 
     private fun loadStoredFavorites(): List<Track> {
@@ -101,14 +130,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             val arr = JSONArray(jsonStr)
             val list = mutableListOf<Track>()
             for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id")
+                if (id.isBlank()) continue
                 list.add(
                     Track(
-                        id = obj.getString("id"),
-                        url = obj.getString("url"),
-                        title = obj.getString("title"),
-                        artist = obj.getString("artist"),
-                        thumbnailUrl = obj.getString("thumbnailUrl"),
+                        id = id,
+                        url = obj.optString("url"),
+                        title = obj.optString("title"),
+                        artist = obj.optString("artist"),
+                        thumbnailUrl = obj.optString("thumbnailUrl"),
                         durationSeconds = obj.optLong("durationSeconds", 0L),
                         isFavorite = true
                     )
@@ -120,7 +151,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun saveStoredFavorites(list: List<Track>) {
+    private fun saveStoredFavorites(list: List<Track>, onSaved: (() -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val arr = JSONArray()
@@ -136,6 +167,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     arr.put(obj)
                 }
                 favPrefs.edit().putString("fav_list", arr.toString()).apply()
+                onSaved?.invoke()
             } catch (e: Exception) {
                 Log.e("RanzzVM", "Save favorites error: ${e.message}")
             }
@@ -144,6 +176,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isLoadingTrending = MutableStateFlow(false)
     val isLoadingTrending = _isLoadingTrending.asStateFlow()
+
+    private val _isRefreshingHome = MutableStateFlow(false)
+    val isRefreshingHome = _isRefreshingHome.asStateFlow()
 
     private val _isSearching = MutableStateFlow(false)
     val isSearching = _isSearching.asStateFlow()
@@ -162,15 +197,30 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val audioDeviceState = audioOutputManager.deviceState
     fun openAudioOutputSettings() = audioOutputManager.openAudioSettings()
 
-    val tasteManager = com.ranzz.music.data.recommendation.TasteManager.getInstance(getApplication())
-    val recentlyPlayed = tasteManager.recentlyPlayed
-    val onRepeatTracks = tasteManager.onRepeatTracks
+    private val historyStore = HistoryStore.getInstance(getApplication())
+    val recentlyPlayed = historyStore.recentlyPlayed
+    val searchRecents = historyStore.searchRecents
 
-    fun removeFromRecents(trackId: String) = tasteManager.removeFromRecents(trackId)
-    fun clearRecentSearches() = tasteManager.clearRecents()
+    fun removeFromRecents(trackId: String) = historyStore.removeFromRecents(trackId)
+    fun clearRecentSearches() = historyStore.clearRecents()
+
+    private val offlineManager = OfflineMusicManager.getInstance(getApplication())
+    val offlineTracks = offlineManager.offlineTracks
+    val downloadProgress = offlineManager.downloadProgress
+
+    fun downloadTrack(track: Track, subQuality: AudioSubQuality = settingsManager.downloadSubQuality.value) {
+        offlineManager.downloadTrack(track, subQuality)
+    }
+
+    fun deleteOfflineTrack(trackId: String) {
+        offlineManager.deleteOfflineTrack(trackId)
+    }
+
+    fun isTrackDownloaded(trackId: String): Boolean = offlineManager.isDownloaded(trackId)
 
     val playlistManager = com.ranzz.music.data.playlist.PlaylistManager.getInstance(getApplication())
     val playlists = playlistManager.playlists
+    val watchLaterTracks = playlistManager.watchLaterTracks
 
     fun createPlaylist(name: String) = playlistManager.createPlaylist(name)
     fun deletePlaylist(id: String) = playlistManager.deletePlaylist(id)
@@ -179,6 +229,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun removeTrackFromPlaylist(id: String, trackId: String) = playlistManager.removeTrackFromPlaylist(id, trackId)
     fun toggleWatchLater(track: Track) = playlistManager.toggleWatchLater(track)
     fun isTrackInWatchLater(trackId: String) = playlistManager.isTrackInWatchLater(trackId)
+    fun removeFromWatchLater(trackId: String) = playlistManager.removeFromWatchLater(trackId)
+
+    fun playWatchLater(startTrack: Track? = null, shuffle: Boolean = false) {
+        val tracks = watchLaterTracks.value
+        if (tracks.isEmpty()) return
+        val list = if (shuffle) tracks.shuffled() else tracks
+        val initial = startTrack ?: list.first()
+        playTrack(initial, list)
+    }
 
     fun playPlaylist(playlist: com.ranzz.music.data.playlist.Playlist, startTrack: Track? = null, shuffle: Boolean = false) {
         if (playlist.tracks.isEmpty()) return
@@ -186,18 +245,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         val initialTrack = startTrack ?: list.first()
         playTrack(initialTrack, list)
     }
-
-    val offlineDownloadManager = com.ranzz.music.data.download.OfflineDownloadManager.getInstance(getApplication())
-    val downloadedTracks = offlineDownloadManager.downloadedTracks
-    val downloadStatuses = offlineDownloadManager.downloadStatuses
-    val downloadProgress = offlineDownloadManager.downloadProgress
-    val totalOfflineStorageBytes = offlineDownloadManager.totalStorageBytes
-
-    fun downloadTrack(track: Track) = offlineDownloadManager.downloadTrack(track)
-    fun removeDownload(trackId: String) = offlineDownloadManager.removeDownload(trackId)
-    fun toggleDownload(track: Track) = offlineDownloadManager.toggleDownload(track)
-    fun isTrackDownloaded(trackId: String): Boolean = offlineDownloadManager.isDownloaded(trackId)
-    fun clearAllDownloads() = offlineDownloadManager.clearAllDownloads()
 
     val lyricsRepository = com.ranzz.music.data.lyrics.LyricsRepository(getApplication())
 
@@ -207,65 +254,100 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLoadingLyrics = MutableStateFlow(false)
     val isLoadingLyrics = _isLoadingLyrics.asStateFlow()
 
-    private val playlistQueue = Collections.synchronizedList(mutableListOf<Track>())
-    private var currentIndex = -1
+    private var sleepTimerJob: Job? = null
+    private val _sleepTimerMinutes = MutableStateFlow<Int?>(null)
+    val sleepTimerMinutes: StateFlow<Int?> = _sleepTimerMinutes.asStateFlow()
+
+    private val _sleepTimerEndOfTrack = MutableStateFlow(false)
+    val sleepTimerEndOfTrack: StateFlow<Boolean> = _sleepTimerEndOfTrack.asStateFlow()
+
+    fun setSleepTimer(minutes: Int?, pauseAtEndOfTrack: Boolean = false) {
+        sleepTimerJob?.cancel()
+        _sleepTimerEndOfTrack.value = pauseAtEndOfTrack
+        queueManager.sleepTimerEndOfTrack = pauseAtEndOfTrack
+        if (pauseAtEndOfTrack || minutes == null || minutes <= 0) {
+            _sleepTimerMinutes.value = null
+            return
+        }
+        _sleepTimerMinutes.value = minutes
+        sleepTimerJob = viewModelScope.launch {
+            var remaining = minutes
+            while (remaining > 0) {
+                delay(60_000L)
+                remaining -= 1
+                _sleepTimerMinutes.value = if (remaining > 0) remaining else null
+            }
+            _sleepTimerMinutes.value = null
+            _sleepTimerEndOfTrack.value = false
+            mediaController?.pause()
+            _isPlaying.value = false
+        }
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        _sleepTimerMinutes.value = null
+        _sleepTimerEndOfTrack.value = false
+        queueManager.sleepTimerEndOfTrack = false
+    }
 
     val queueState: StateFlow<List<Track>> = queueManager.queueState
-
-    fun updateQueueState() {
-        val current = queueManager.queueState.value
-        synchronized(playlistQueue) {
-            playlistQueue.clear()
-            playlistQueue.addAll(current)
-        }
-        currentIndex = queueManager.currentIndex.value
-    }
 
     fun getCurrentQueueIndex(): Int = queueManager.currentIndex.value
 
     fun addToQueue(track: Track) {
         queueManager.addToQueue(track)
-        updateQueueState()
     }
 
     fun removeFromQueue(index: Int): Boolean {
-        val result = queueManager.removeFromQueue(index)
-        updateQueueState()
-        return result
+        val wasCurrent = index == queueManager.currentIndex.value
+        val removed = queueManager.removeFromQueue(index)
+        if (removed && wasCurrent) {
+            if (queueManager.currentTrack.value != null) {
+                triggerServicePlayCurrent()
+            } else {
+                mediaController?.stop()
+                mediaController?.clearMediaItems()
+            }
+        }
+        return removed
     }
 
-    fun moveQueueItem(fromIndex: Int, toIndex: Int): Boolean {
-        val result = queueManager.moveQueueItem(fromIndex, toIndex)
-        updateQueueState()
-        return result
-    }
+    fun moveQueueItem(fromIndex: Int, toIndex: Int): Boolean = queueManager.moveQueueItem(fromIndex, toIndex)
 
     fun clearUpcomingQueue() {
         queueManager.clearUpcomingQueue()
-        updateQueueState()
     }
 
     private fun appendRadioTracks(candidates: List<Track>) {
         if (candidates.isEmpty()) return
-        val fresh = synchronized(playlistQueue) {
-            val existingIds = playlistQueue.mapTo(HashSet()) { it.id }
-            tasteManager.rankRadioTracks(candidates.filter { it.id !in existingIds })
+        val currentQ = queueManager.queueState.value
+        val existingIds = currentQ.mapTo(HashSet()) { it.id }
+        val existingTitles = currentQ.mapNotNullTo(HashSet()) {
+            com.ranzz.music.data.native.RanzzNativeCore.normalizeSongTitleKey(it.title).takeIf(String::isNotEmpty)
+        }
+        val fresh = ArrayList<Track>(candidates.size)
+        for (cand in candidates) {
+            if (cand.id in existingIds) continue
+            val titleKey = com.ranzz.music.data.native.RanzzNativeCore.normalizeSongTitleKey(cand.title)
+            if (titleKey.isNotEmpty() && !existingTitles.add(titleKey)) continue
+            fresh.add(cand)
         }
         if (fresh.isNotEmpty()) {
             fresh.forEach { queueManager.addToQueue(it) }
-            updateQueueState()
         }
     }
 
     private var progressJob: Job? = null
     private var suggestJob: Job? = null
-    private var playJob: Job? = null
     private var lyricsJob: Job? = null
     private var searchJob: Job? = null
     private var genreJob: Job? = null
-    private var pendingTrackToPlay: Track? = null
-    private var hasRetriedFallback = false
-    private var trackStartTime = 0L
+    private var commentsJob: Job? = null
+    private var lastCommentsVideoId: String? = null
+    private var hasPendingServicePlay = false
+    private var lastLyricsLoadedForId: String? = null
 
     private val mediaActionReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -291,36 +373,159 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun hasActiveWidgets(): Boolean {
+        return runCatching {
+            val app = getApplication<Application>()
+            val mgr = android.appwidget.AppWidgetManager.getInstance(app)
+            val compactIds = mgr.getAppWidgetIds(ComponentName(app, com.ranzz.music.widget.RanzzCompactWidgetProvider::class.java))
+            val squareIds = mgr.getAppWidgetIds(ComponentName(app, com.ranzz.music.widget.RanzzSquareWidgetProvider::class.java))
+            compactIds.isNotEmpty() || squareIds.isNotEmpty()
+        }.getOrDefault(true)
+    }
+
     private fun syncWidgetState() {
         val controller = mediaController ?: return
+        if (!hasActiveWidgets()) return
         persist(getApplication(), controller)
         viewModelScope.launch(Dispatchers.IO) { updateRanzzWidgets(getApplication()) }
     }
 
+    fun retranslateActiveLyrics(
+        sourceLyrics: com.ranzz.music.data.lyrics.LyricsData? = _currentLyrics.value,
+        targetLang: com.ranzz.music.data.settings.LyricsLanguage = settingsManager.lyricsLanguage.value
+    ) {
+        val data = sourceLyrics ?: return
+        val trackId = data.trackId
+        lyricsJob?.cancel()
+        lyricsJob = viewModelScope.launch(Dispatchers.IO) {
+            _isLoadingLyrics.value = true
+            try {
+                val translated = lyricsRepository.translateLyrics(data, targetLang)
+                if (_currentTrack.value?.id == trackId) {
+                    _currentLyrics.value = translated
+                }
+            } catch (e: Exception) {
+                Log.e("RanzzVM", "Retranslate lyrics error: ${e.message}")
+            } finally {
+                _isLoadingLyrics.value = false
+            }
+        }
+    }
+
+    private fun triggerLyricsAndRadioForTrack(track: Track) {
+        if (lastLyricsLoadedForId == track.id) return
+        lastLyricsLoadedForId = track.id
+
+        lyricsJob?.cancel()
+        lyricsJob = viewModelScope.launch(Dispatchers.IO) {
+            _isLoadingLyrics.value = true
+            _currentLyrics.value = null
+            try {
+                val data = lyricsRepository.getLyrics(
+                    trackId = track.id,
+                    title = track.title,
+                    artist = track.artist,
+                    durationSeconds = track.durationSeconds,
+                    autoTranslate = false
+                )
+                _currentLyrics.value = data
+
+                if (data != null && data.lines.isNotEmpty() && settingsManager.autoTranslate.value) {
+                    val translated = lyricsRepository.translateLyrics(data, settingsManager.lyricsLanguage.value)
+                    if (_currentTrack.value?.id == track.id) {
+                        _currentLyrics.value = translated
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("RanzzVM", "Lyrics load error: ${e.message}")
+            } finally {
+                _isLoadingLyrics.value = false
+            }
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                delay(1800L)
+                val radioTracks = repository.getRadioTracks(track.id)
+                if (radioTracks.isNotEmpty()) {
+                    _relatedTracks.value = radioTracks
+                    val remaining = queueManager.queueState.value.size - queueManager.currentIndex.value
+                    if (queueManager.queueState.value.size <= 2 || remaining <= 3) {
+                        appendRadioTracks(radioTracks)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d("RanzzVM", "Automix radio fetch: ${e.message}")
+            }
+        }
+    }
+
     init {
-        queueManager.isUiControllerActive = true
         initializeMediaController()
         loadTrending()
-        viewModelScope.launch {
-            queueManager.queueState.collect { tracks ->
-                synchronized(playlistQueue) {
-                    playlistQueue.clear()
-                    playlistQueue.addAll(tracks)
-                }
-            }
-        }
-        viewModelScope.launch {
-            queueManager.currentIndex.collect { idx ->
-                currentIndex = idx
-            }
-        }
+
         viewModelScope.launch {
             queueManager.currentTrack.collect { trk ->
                 if (trk == null && queueManager.queueState.value.isEmpty()) {
                     _currentTrack.value = null
-                } else if (trk != null && _currentTrack.value?.id != trk.id) {
-                    _currentTrack.value = trk
+                } else if (trk != null) {
+                    val isFav = _favorites.value.any { it.id == trk.id }
+                    val syncedTrk = if (trk.isFavorite != isFav) trk.copy(isFavorite = isFav) else trk
+                    val changedId = _currentTrack.value?.id != syncedTrk.id
+                    _currentTrack.value = syncedTrk
+                    if (changedId) {
+                        triggerLyricsAndRadioForTrack(syncedTrk)
+                    }
                 }
+            }
+        }
+        fun accountIdentityKey(acc: com.ranzz.music.data.auth.UserAccount?): String? {
+            if (acc == null || !acc.isGoogleLinked) return null
+            return "${acc.email}|${acc.authUser}|${acc.pageId}"
+        }
+        var lastAccountKey = accountIdentityKey(com.ranzz.music.data.auth.AuthManager.getInstance().authState.value)
+        viewModelScope.launch {
+            authState.collect { account ->
+                val curKey = accountIdentityKey(account)
+                if (curKey != null && curKey != lastAccountKey) {
+                    lastAccountKey = curKey
+                    repository.invalidateHomeCache()
+                    loadTrending()
+                    syncLikedSongs()
+                } else if (curKey == null && lastAccountKey != null) {
+                    lastAccountKey = null
+                    repository.invalidateHomeCache()
+                    loadTrending()
+                }
+            }
+        }
+        var lastObservedAppLang = settingsManager.language.value
+        viewModelScope.launch {
+            settingsManager.language.collect { newLang ->
+                if (newLang != lastObservedAppLang) {
+                    lastObservedAppLang = newLang
+                    repository.invalidateHomeCache()
+                    loadTrending()
+                }
+            }
+        }
+        var lastObservedLyricsLang = settingsManager.lyricsLanguage.value
+        viewModelScope.launch {
+            settingsManager.lyricsLanguage.collect { newTargetLang ->
+                if (newTargetLang != lastObservedLyricsLang) {
+                    lastObservedLyricsLang = newTargetLang
+                    val existingLyrics = _currentLyrics.value
+                    val activeTrk = _currentTrack.value
+                    if (existingLyrics != null && activeTrk != null && existingLyrics.trackId == activeTrk.id) {
+                        retranslateActiveLyrics(existingLyrics, newTargetLang)
+                    }
+                }
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val storedFavs = loadStoredFavorites()
+            if (storedFavs.isNotEmpty() && _favorites.value.isEmpty()) {
+                _favorites.value = storedFavs
             }
         }
         try {
@@ -347,12 +552,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         controllerFuture?.addListener({
             try {
                 mediaController = controllerFuture?.get()
-                val hadPendingTrack = pendingTrackToPlay != null
-                pendingTrackToPlay?.let { pending ->
-                    pendingTrackToPlay = null
-                    playTrack(pending)
+                val hadPending = hasPendingServicePlay
+                if (hadPending) {
+                    hasPendingServicePlay = false
+                    triggerServicePlayCurrent()
+                } else {
+                    syncCurrentTrackFromController()
                 }
-                if (!hadPendingTrack) syncCurrentTrackFromController()
                 mediaController?.addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(playing: Boolean) {
                         _isPlaying.value = playing
@@ -378,7 +584,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                             }
                             Player.STATE_READY -> {
-                                hasRetriedFallback = false
                                 queueManager.recordPlaybackSuccess()
                                 _isLoadingTrack.value = false
                                 isSeeking = false
@@ -404,7 +609,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                                                             trackId = currentTrk.id,
                                                             title = currentTrk.title,
                                                             artist = currentTrk.artist,
-                                                            durationSeconds = realDurSec
+                                                            durationSeconds = realDurSec,
+                                                            autoTranslate = settingsManager.autoTranslate.value
                                                         )
                                                         if (refreshed != null && refreshed.isSynced && _currentTrack.value?.id == currentTrk.id) {
                                                             _currentLyrics.value = refreshed
@@ -422,8 +628,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             Player.STATE_ENDED -> {
                                 _isLoadingTrack.value = false
-                                _currentTrack.value?.let { tasteManager.recordTrackPlayed(it) }
-                                skipNext(userInitiated = false, isErrorRecovery = false)
+                                if (_sleepTimerEndOfTrack.value) {
+                                    _sleepTimerEndOfTrack.value = false
+                                    mediaController?.pause()
+                                    _isPlaying.value = false
+                                }
                             }
                             Player.STATE_IDLE -> {
                                 _isLoadingTrack.value = false
@@ -450,77 +659,23 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
-                        Log.e("RanzzMusicViewModel", "Player error: ${error.message}", error)
-                        val track = _currentTrack.value
-                        val resumePositionMs = _playbackPosition.value.coerceAtLeast(mediaController?.currentPosition ?: 0L)
-                        if (track != null) {
-                            try {
-                                repository.evictStreamUrl(track.url)
-                            } catch (_: Throwable) {}
-                        }
-                        if (track != null && !hasRetriedFallback) {
-                            hasRetriedFallback = true
-                            viewModelScope.launch(Dispatchers.IO) {
-                                val fallbackUrl = repository.getFallbackStreamUrl(track.url)
-                                    ?: repository.getAudioStreamUrl(track.url, settingsManager.audioQuality.value)
-                                if (!fallbackUrl.isNullOrBlank() && fallbackUrl != track.streamUrl) {
-                                    val fallbackTrack = track.copy(streamUrl = fallbackUrl, mimeType = null)
-                                    withContext(Dispatchers.Main) {
-                                        _currentTrack.value = fallbackTrack
-                                        queueManager.updateCurrentTrack(fallbackTrack)
-                                        mediaController?.let { ctrl ->
-                                            val meta = MediaMetadata.Builder()
-                                                .setTitle(fallbackTrack.title)
-                                                .setArtist(fallbackTrack.artist)
-                                                .setArtworkUri(Uri.parse(fallbackTrack.highResThumbnailUrl))
-                                                .setDisplayTitle(fallbackTrack.title)
-                                                .setExtras(Bundle().apply {
-                                                    putString(WIDGET_SOURCE_URL_KEY, fallbackTrack.url)
-                                                })
-                                                .build()
-
-                                            val item = MediaItem.Builder()
-                                                .setMediaId(fallbackTrack.id)
-                                                .setUri(fallbackUrl)
-                                                .setMediaMetadata(meta)
-                                                .build()
-
-                                            ctrl.setMediaItem(item)
-                                            ctrl.prepare()
-                                            if (resumePositionMs > 2000L) {
-                                                ctrl.seekTo(resumePositionMs)
-                                            }
-                                            ctrl.play()
-                                        }
-                                    }
-                                    return@launch
-                                }
-                                withContext(Dispatchers.Main) {
-                                    val failureCount = queueManager.recordPlaybackFailure()
-                                    _isLoadingTrack.value = false
-                                    _isPlaying.value = false
-                                    if (failureCount < 3) {
-                                        skipNext(userInitiated = false, isErrorRecovery = true)
-                                    }
-                                }
-                            }
-                        } else {
-                            hasRetriedFallback = false
-                            val failureCount = queueManager.recordPlaybackFailure()
-                            _isLoadingTrack.value = false
-                            _isPlaying.value = false
-                            if (failureCount < 3) {
-                                skipNext(userInitiated = false, isErrorRecovery = true)
-                            }
-                        }
+                        Log.e("RanzzMusicViewModel", "Observed player error: ${error.message}", error)
+                        _isLoadingTrack.value = false
+                        _isPlaying.value = false
                     }
 
                     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                        anchorPosition = 0L
-                        val now = SystemClock.elapsedRealtime()
-                        anchorTimestamp = now
-                        lastGroundTruthSync = now
-                        _playbackPosition.value = 0L
+                        val incomingId = mediaItem?.mediaId
+                        val isMetadataRefreshForSameTrack = !incomingId.isNullOrBlank() &&
+                            incomingId == _currentTrack.value?.id &&
+                            reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
+                        if (!isMetadataRefreshForSameTrack) {
+                            anchorPosition = 0L
+                            val now = SystemClock.elapsedRealtime()
+                            anchorTimestamp = now
+                            lastGroundTruthSync = now
+                            _playbackPosition.value = 0L
+                        }
                         syncCurrentTrackFromController()
                         syncWidgetState()
                     }
@@ -559,9 +714,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             isFavorite = favorite
         )
         _currentTrack.value = resolved
-        queueManager.updateCurrentTrack(resolved)
+        if (queueManager.queueState.value.isEmpty()) {
+            queueManager.playTrack(resolved, listOf(resolved))
+        } else {
+            queueManager.updateCurrentTrack(resolved)
+        }
+        triggerLyricsAndRadioForTrack(resolved)
         _isPlaying.value = controller.isPlaying
-        if (controller.duration > 0) _duration.value = controller.duration
+        _duration.value = when {
+            controller.duration > 0 -> controller.duration
+            resolved.durationSeconds > 0 -> resolved.durationSeconds * 1000L
+            else -> 0L
+        }
         _playbackPosition.value = controller.currentPosition.coerceAtLeast(0)
         anchorPosition = _playbackPosition.value
         val now = SystemClock.elapsedRealtime()
@@ -597,6 +761,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 if (!isSeeking && (now - lastGroundTruthSync >= 500L)) {
                     mediaController?.let { ctrl ->
                         val actualPos = ctrl.currentPosition.coerceAtLeast(0L)
+                        _bufferedPosition.value = ctrl.bufferedPosition.coerceAtLeast(0L)
                         val realDuration = ctrl.duration
                         if (realDuration > 0) {
                             _duration.value = realDuration
@@ -638,7 +803,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     syncWidgetState()
                 }
 
-                delay(33)
+                delay(if (_isPlayerExpanded.value) 100L else 500L)
             }
         }
     }
@@ -653,30 +818,350 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var homeRefreshCycle = 0
+
+    private fun <T> rotateListBy(items: List<T>, offset: Int): List<T> {
+        if (items.size <= 1) return items
+        val shift = ((offset % items.size) + items.size) % items.size
+        if (shift == 0) return items
+        return items.drop(shift) + items.take(shift)
+    }
+
+    private fun selectRotatingHomeSeed(fallbackPool: List<Track>): Track? {
+        val candidates = ArrayList<Track>()
+        val seen = HashSet<String>()
+        for (t in (recentlyPlayed.value.take(10) + _favorites.value.take(12) + fallbackPool.take(12))) {
+            if (!t.isCollection && !t.isArtistProfile && t.id.isNotBlank() && seen.add(t.id)) {
+                candidates.add(t)
+            }
+        }
+        if (candidates.isEmpty()) return null
+        return candidates[homeRefreshCycle % candidates.size]
+    }
+
+    private fun personalizeHomeShelves(
+        shelves: List<HomeSection>,
+        rotateTop: Boolean,
+        freshQuickPickTracks: List<Track> = emptyList(),
+        seedTrack: Track? = null
+    ): List<HomeSection> {
+        if (shelves.isEmpty() && freshQuickPickTracks.isEmpty()) return shelves
+        if (rotateTop) {
+            homeRefreshCycle = (homeRefreshCycle + 1) % 1024
+        }
+        val cycle = homeRefreshCycle
+        val recents = recentlyPlayed.value
+        val favs = _favorites.value
+        val activeNow = _currentTrack.value
+
+        val dedupedServer = shelves.distinctBy { it.title.trim().lowercase() }
+        val allServerSongs = dedupedServer.flatMap { it.tracks }
+            .filter { !it.isCollection && !it.isArtistProfile && it.id.isNotBlank() }
+            .distinctBy { it.id }
+        val allServerCollections = dedupedServer.flatMap { it.tracks }
+            .filter { (it.isCollection || it.isArtistProfile) && it.id.isNotBlank() }
+            .distinctBy { it.id }
+
+        /* 1. Dynamic Speed Dial (3x3 Multi-Page Grid, up to 27 items / 3 pages) */
+        val serverSpeedDial = dedupedServer.firstOrNull {
+            it.layoutType == com.ranzz.music.data.model.HomeSectionType.SPEED_DIAL ||
+                "speed dial" in it.title.lowercase()
+        }
+        val anchorSpeedItems = ArrayList<Track>()
+        val speedSeen = HashSet<String>()
+        if (activeNow != null && activeNow.id.isNotBlank() && speedSeen.add(activeNow.id)) {
+            anchorSpeedItems.add(activeNow)
+        }
+        for (r in recents.take(3)) {
+            if (r.id.isNotBlank() && speedSeen.add(r.id)) {
+                anchorSpeedItems.add(r)
+            }
+        }
+        val rotatingSpeedPool = ArrayList<Track>()
+        val rawSpeedCandidates = (serverSpeedDial?.tracks.orEmpty()) +
+            recents.drop(3) +
+            favs +
+            allServerCollections.take(9) +
+            allServerSongs.take(18)
+        for (item in rawSpeedCandidates) {
+            if (item.id.isNotBlank() && speedSeen.add(item.id)) {
+                rotatingSpeedPool.add(item)
+            }
+        }
+        val rotatedSpeedTail = rotateListBy(rotatingSpeedPool, cycle * 3)
+        val finalSpeedDialTracks = (anchorSpeedItems + rotatedSpeedTail).take(27)
+        val speedDialSection = if (finalSpeedDialTracks.size >= 6) {
+            val accountName = authState.value?.name?.takeIf { it.isNotBlank() }
+            HomeSection(
+                title = serverSpeedDial?.title ?: "Speed dial",
+                subtitle = serverSpeedDial?.subtitle?.takeIf { it.isNotBlank() }
+                    ?: accountName?.uppercase().orEmpty(),
+                tracks = finalSpeedDialTracks,
+                layoutType = com.ranzz.music.data.model.HomeSectionType.SPEED_DIAL,
+                headerAvatarUrl = authState.value?.avatarUrl?.takeIf { it.isNotBlank() }
+            )
+        } else null
+
+        /* 2. Dynamic Quick Picks (Re-seeded via Automix Radio + Rotated Server Songs) */
+        val serverQuickPicks = dedupedServer.firstOrNull {
+            "quick picks" in it.title.lowercase() ||
+                "pilihan cepat" in it.title.lowercase() ||
+                it.layoutType == com.ranzz.music.data.model.HomeSectionType.COMPACT_COLUMNS
+        }
+        val rotatedServerQp = rotateListBy(
+            serverQuickPicks?.tracks?.filter { !it.isCollection && !it.isArtistProfile }.orEmpty(),
+            cycle * 4
+        )
+        val mergedQuickPicks = ArrayList<Track>()
+        val qpSeen = HashSet<String>()
+        val interleavedQp = ArrayList<Track>()
+        val maxQpLen = maxOf(freshQuickPickTracks.size, rotatedServerQp.size)
+        for (i in 0 until maxQpLen) {
+            if (i < freshQuickPickTracks.size) interleavedQp.add(freshQuickPickTracks[i])
+            if (i < rotatedServerQp.size) interleavedQp.add(rotatedServerQp[i])
+        }
+        for (t in (interleavedQp + rotateListBy(allServerSongs, cycle * 5))) {
+            if (t.id.isNotBlank() && qpSeen.add(t.id)) {
+                mergedQuickPicks.add(t)
+                if (mergedQuickPicks.size >= 20) break
+            }
+        }
+        val qpStrapline = if (seedTrack != null && (cycle % 2 == 1 || freshQuickPickTracks.isNotEmpty())) {
+            "START RADIO BASED ON ${seedTrack.title.uppercase()}"
+        } else {
+            "START RADIO FROM A SONG"
+        }
+        val quickPicksSection = if (mergedQuickPicks.isNotEmpty()) {
+            HomeSection(
+                title = serverQuickPicks?.title ?: "Quick picks",
+                subtitle = qpStrapline,
+                tracks = mergedQuickPicks,
+                layoutType = com.ranzz.music.data.model.HomeSectionType.COMPACT_COLUMNS
+            )
+        } else null
+
+        /* 3. Dynamic Listen Again Shelf */
+        val serverListenAgain = dedupedServer.firstOrNull {
+            "listen again" in it.title.lowercase() || "dengarkan lagi" in it.title.lowercase()
+        }
+        val listenAgainPool = (rotateListBy(recents, cycle * 2) +
+            serverListenAgain?.tracks.orEmpty() +
+            rotateListBy(favs, cycle * 3))
+            .distinctBy { it.id }
+            .take(14)
+        val listenAgainSection = if (listenAgainPool.size >= 4) {
+            HomeSection(
+                title = serverListenAgain?.title ?: "Listen again",
+                subtitle = serverListenAgain?.subtitle?.takeIf { it.isNotBlank() } ?: "FROM YOUR RECENT SESSIONS",
+                tracks = listenAgainPool,
+                layoutType = com.ranzz.music.data.model.HomeSectionType.SQUARE_CAROUSEL
+            )
+        } else null
+
+        /* 4. Dynamic Forgotten Favorites Shelf */
+        val recentTopIds = recents.take(3).mapTo(HashSet()) { it.id }
+        val serverForgotten = dedupedServer.firstOrNull {
+            "forgotten" in it.title.lowercase()
+        }
+        val forgottenPool = (rotateListBy(favs.filterNot { it.id in recentTopIds }, cycle * 3) +
+            rotateListBy(recents.drop(4), cycle * 2) +
+            serverForgotten?.tracks.orEmpty())
+            .distinctBy { it.id }
+            .take(12)
+        val forgottenSection = if (forgottenPool.size >= 4) {
+            HomeSection(
+                title = serverForgotten?.title ?: "Forgotten favorites",
+                subtitle = "REDISCOVER YOUR SOUND",
+                tracks = forgottenPool,
+                layoutType = com.ranzz.music.data.model.HomeSectionType.WIDE_CARDS
+            )
+        } else null
+
+        /* 5. Dynamic Similar To [Artist] Shelf */
+        val artistSourceTracks = (recents + favs + allServerSongs)
+            .filter {
+                val clean = it.artist.substringBefore("•").substringBefore(",").trim()
+                clean.length >= 2 && !clean.equals("Unknown Artist", ignoreCase = true)
+            }
+        val distinctArtists = artistSourceTracks
+            .groupBy { it.artist.substringBefore("•").substringBefore(",").trim() }
+            .entries
+            .filter { it.key.isNotBlank() }
+            .toList()
+        val dynamicSimilarSection = if (distinctArtists.isNotEmpty()) {
+            val chosenEntry = distinctArtists[cycle % distinctArtists.size]
+            val artistName = chosenEntry.key
+            val artistTracks = chosenEntry.value
+            val avatarThumb = artistTracks.firstOrNull { it.thumbnailUrl.isNotBlank() }?.thumbnailUrl
+            val relatedForArtist = (artistTracks +
+                freshQuickPickTracks.filter { it.artist.contains(artistName, ignoreCase = true) } +
+                rotateListBy(freshQuickPickTracks.ifEmpty { allServerSongs }, cycle * 3))
+                .distinctBy { it.id }
+                .take(12)
+            if (relatedForArtist.size >= 4) {
+                HomeSection(
+                    title = artistName,
+                    subtitle = "SIMILAR TO",
+                    tracks = relatedForArtist,
+                    layoutType = com.ranzz.music.data.model.HomeSectionType.SIMILAR_TO,
+                    headerAvatarUrl = avatarThumb
+                )
+            } else null
+        } else null
+
+        /* 6. Dynamic Time-of-Day Vibe Shelf */
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val (timeTitle, timeSub) = when (hour) {
+            in 5..11 -> "Morning energize" to "FRESH START FOR TODAY"
+            in 12..16 -> "Afternoon focus" to "MIDDAY FLOW"
+            in 17..21 -> "Evening feel good" to "UNWIND & VIBE"
+            else -> "Late night chill" to "AFTER HOURS SESSIONS"
+        }
+        val timeTracks = rotateListBy(
+            (allServerSongs + freshQuickPickTracks + favs).distinctBy { it.id },
+            cycle * 7 + 3
+        ).take(12)
+        val timeSection = if (timeTracks.size >= 5) {
+            HomeSection(
+                title = timeTitle,
+                subtitle = timeSub,
+                tracks = timeTracks,
+                layoutType = com.ranzz.music.data.model.HomeSectionType.SQUARE_CAROUSEL
+            )
+        } else null
+
+        /* 7. Remaining Server Shelves (Rotated & Internal Tracks Shifted on Refresh) */
+        val consumedTitles = setOfNotNull(
+            serverSpeedDial?.title?.lowercase(),
+            serverQuickPicks?.title?.lowercase(),
+            serverListenAgain?.title?.lowercase(),
+            serverForgotten?.title?.lowercase()
+        )
+        val remainingServerShelves = dedupedServer
+            .filterNot { it.title.trim().lowercase() in consumedTitles }
+            .mapIndexed { idx, sec ->
+                if (rotateTop && sec.tracks.size > 3) {
+                    sec.copy(tracks = rotateListBy(sec.tracks, cycle * 2 + idx + 1))
+                } else {
+                    sec
+                }
+            }
+        val rotatedServerTail = if (rotateTop && remainingServerShelves.size > 2) {
+            rotateListBy(remainingServerShelves, cycle)
+        } else {
+            remainingServerShelves
+        }
+
+        /* 8. Assemble Dynamic Living Feed (Alternates Top Anchor & Mid-Feed Rotation) */
+        val assembled = ArrayList<HomeSection>()
+        if (cycle % 2 == 0) {
+            if (speedDialSection != null) assembled.add(speedDialSection)
+            if (quickPicksSection != null) assembled.add(quickPicksSection)
+        } else {
+            if (quickPicksSection != null) assembled.add(quickPicksSection)
+            if (speedDialSection != null) assembled.add(speedDialSection)
+        }
+
+        val midDynamicPool = listOfNotNull(
+            listenAgainSection,
+            dynamicSimilarSection,
+            timeSection,
+            forgottenSection
+        )
+        val rotatedMidDynamic = rotateListBy(midDynamicPool, cycle)
+
+        val maxLen = maxOf(rotatedMidDynamic.size, rotatedServerTail.size)
+        for (i in 0 until maxLen) {
+            if (i < rotatedMidDynamic.size) assembled.add(rotatedMidDynamic[i])
+            if (i < rotatedServerTail.size) assembled.add(rotatedServerTail[i])
+        }
+
+        return assembled.distinctBy { "${it.layoutType}_${it.title.trim().lowercase()}" }
+    }
+
+    fun refreshHome() {
+        if (_isRefreshingHome.value) return
+        viewModelScope.launch {
+            _isRefreshingHome.value = true
+            try {
+                val ytmShelves = repository.getHomeShelves(forceRefresh = true)
+                val baseSongs = ytmShelves.flatMap { it.tracks }
+                val seed = selectRotatingHomeSeed(baseSongs)
+                val tuners = listOf("AUTOMIX_SETTING_NORMAL", "AUTOMIX_SETTING_DISCOVER", "AUTOMIX_SETTING_FAMILIAR")
+                val tuner = tuners[(homeRefreshCycle + 1) % tuners.size]
+                val freshRadio = if (seed != null) {
+                    repository.getRadioTracks(seed.id, tunerSetting = tuner, forceRefresh = true)
+                } else emptyList()
+
+                if (ytmShelves.isNotEmpty() || freshRadio.isNotEmpty()) {
+                    val personalized = personalizeHomeShelves(
+                        shelves = ytmShelves,
+                        rotateTop = true,
+                        freshQuickPickTracks = freshRadio,
+                        seedTrack = seed
+                    )
+                    _homeSections.value = personalized
+                    _trendingTracks.value = personalized.flatMap { it.tracks }.distinctBy { it.id }
+                } else {
+                    val fallback = repository.getTrendingTracks()
+                    if (fallback.isNotEmpty()) _trendingTracks.value = fallback
+                }
+            } finally {
+                _isRefreshingHome.value = false
+            }
+        }
+    }
+
     fun loadTrending() {
         viewModelScope.launch {
             _isLoadingTrending.value = true
-            val rawShelves = repository.getHomeShelves().toMutableList()
-            val onRepeat = tasteManager.onRepeatTracks.value
-            if (onRepeat.isNotEmpty()) {
-                rawShelves.add(0, HomeSection(
-                    title = "Lagi Sering Kamu Putar",
-                    subtitle = "Berdasarkan selera musikmu",
-                    tracks = onRepeat
-                ))
+            val ytmShelves = repository.getHomeShelves()
+            val baseSongs = ytmShelves.flatMap { it.tracks }
+            val seed = selectRotatingHomeSeed(baseSongs)
+            val initialPersonalized = personalizeHomeShelves(
+                shelves = ytmShelves,
+                rotateTop = true,
+                freshQuickPickTracks = emptyList(),
+                seedTrack = seed
+            )
+            if (initialPersonalized.isNotEmpty()) {
+                _homeSections.value = initialPersonalized
             }
-            _homeSections.value = rawShelves
-            val tracks = if (rawShelves.isNotEmpty()) {
-                rawShelves.flatMap { it.tracks }.distinctBy { it.id }
+            val tracks = if (initialPersonalized.isNotEmpty()) {
+                initialPersonalized.flatMap { it.tracks }.distinctBy { it.id }
             } else {
                 repository.getTrendingTracks()
             }
-            _trendingTracks.value = tracks
+            if (tracks.isNotEmpty()) {
+                _trendingTracks.value = tracks
+            }
             _isLoadingTrending.value = false
+
+            if (seed != null) {
+                launch(Dispatchers.IO) {
+                    try {
+                        val tuners = listOf("AUTOMIX_SETTING_NORMAL", "AUTOMIX_SETTING_DISCOVER", "AUTOMIX_SETTING_FAMILIAR")
+                        val freshRadio = repository.getRadioTracks(
+                            seed.id,
+                            tunerSetting = tuners[homeRefreshCycle % tuners.size],
+                            forceRefresh = false
+                        )
+                        if (freshRadio.isNotEmpty()) {
+                            val enriched = personalizeHomeShelves(
+                                shelves = ytmShelves,
+                                rotateTop = false,
+                                freshQuickPickTracks = freshRadio,
+                                seedTrack = seed
+                            )
+                            _homeSections.value = enriched
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
 
             launch(Dispatchers.IO) {
                 delay(2000)
-                tracks.take(2).forEach {
+                tracks.firstOrNull { it.browseId == null && it.playlistId == null }?.let {
                     repository.getAudioStreamUrl(it.url, settingsManager.audioQuality.value)
                 }
             }
@@ -685,22 +1170,34 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadSuggestions(query: String) {
         suggestJob?.cancel()
+        searchJob?.cancel()
         if (query.isBlank()) {
             _suggestions.value = emptyList()
+            _searchResults.value = emptyList()
+            _isSearching.value = false
             return
         }
         suggestJob = viewModelScope.launch {
-            delay(200)
+            delay(180)
             val list = repository.getSuggestions(query)
             _suggestions.value = list
+        }
+        searchJob = viewModelScope.launch {
+            delay(360)
+            _isSearching.value = true
+            val results = repository.searchTracks(query)
+            _searchResults.value = results
+            _isSearching.value = false
         }
     }
 
     fun search(query: String) {
+        suggestJob?.cancel()
         searchJob?.cancel()
         _suggestions.value = emptyList()
         if (query.isBlank()) {
             _searchResults.value = emptyList()
+            _isSearching.value = false
             return
         }
         searchJob = viewModelScope.launch {
@@ -718,200 +1215,262 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun searchWithFilter(query: String, filterType: String) {
+        suggestJob?.cancel()
+        searchJob?.cancel()
+        _suggestions.value = emptyList()
+        if (query.isBlank()) {
+            _searchResults.value = emptyList()
+            _isSearching.value = false
+            return
+        }
+        searchJob = viewModelScope.launch {
+            _isSearching.value = true
+            val results = if (filterType == "All") {
+                repository.searchTracks(query)
+            } else {
+                repository.searchByCategoryFilter(query, filterType)
+            }
+            _searchResults.value = results
+            _isSearching.value = false
+        }
+    }
+
     fun loadGenreTracks(genre: String) {
         genreJob?.cancel()
         if (genre.isBlank() || genre == "Semua") {
             _genreTracks.value = emptyList()
+            _genreSections.value = emptyList()
             _isLoadingGenre.value = false
             return
         }
         genreJob = viewModelScope.launch {
             _isLoadingGenre.value = true
             try {
-                val results = repository.searchTracks("$genre music hits")
-                _genreTracks.value = results
+                if (genre.startsWith("FEmusic_")) {
+                    val exploreShelves = repository.getExploreShelves(genre)
+                    _genreSections.value = exploreShelves.distinctBy { it.title.trim().lowercase() }
+                    val flat = exploreShelves.flatMap { it.tracks }.filter { !it.isCollection && !it.isArtistProfile }
+                    _genreTracks.value = flat
+                    return@launch
+                }
+
+                val discoveredChips = repository.getDiscoveredMoodChips()
+                val matchedToken = discoveredChips.entries.firstOrNull { (k, _) ->
+                    k.equals(genre, ignoreCase = true) || k.contains(genre, ignoreCase = true) || genre.contains(k, ignoreCase = true)
+                }?.value
+
+                if (!matchedToken.isNullOrBlank()) {
+                    val moodShelves = repository.getHomeShelves(forceRefresh = true, filterParams = matchedToken)
+                    if (moodShelves.isNotEmpty()) {
+                        _genreSections.value = moodShelves.distinctBy { it.title.trim().lowercase() }
+                        _genreTracks.value = moodShelves.flatMap { it.tracks }.filter { !it.isCollection && !it.isArtistProfile }
+                        return@launch
+                    }
+                }
+
+                _genreSections.value = emptyList()
+                val results = repository.searchTracks("$genre music")
+                val seed = results.firstOrNull()
+                val ytmRadio = if (seed != null) {
+                    repository.getRadioTracks(seed.id)
+                } else {
+                    emptyList()
+                }
+                val combined = ArrayList<Track>(results.size + ytmRadio.size)
+                for (t in (results.take(5) + ytmRadio + results.drop(5))) {
+                    if (combined.none { com.ranzz.music.data.native.RanzzNativeCore.isDuplicateOrVariantTrack(t, it) }) {
+                        combined.add(t)
+                    }
+                }
+                _genreTracks.value = combined
             } catch (e: Exception) {
                 Log.e("RanzzMusicViewModel", "Load genre tracks error: ${e.message}")
                 _genreTracks.value = emptyList()
+                _genreSections.value = emptyList()
             } finally {
                 _isLoadingGenre.value = false
             }
         }
     }
 
-    fun playTrackFromSearch(track: Track) {
-        playTrack(track, listOf(track))
+    fun openBrowseItemDetails(item: Track) {
+        viewModelScope.launch {
+            _isLoadingBrowseDetails.value = true
+            _activeBrowseDetails.value = PlaylistBrowseDetails(
+                title = item.title,
+                subtitle = item.artist,
+                thumbnailUrl = item.thumbnailUrl,
+                tracks = emptyList(),
+                browseId = item.browseId,
+                playlistId = item.playlistId
+            )
+            try {
+                val details = repository.getPlaylistBrowseDetails(
+                    browseId = item.browseId,
+                    playlistId = item.playlistId,
+                    fallbackTitle = item.title,
+                    fallbackSubtitle = item.artist,
+                    fallbackThumb = item.thumbnailUrl
+                )
+                _activeBrowseDetails.value = details
+            } finally {
+                _isLoadingBrowseDetails.value = false
+            }
+        }
     }
 
-    fun playTrack(track: Track, newQueue: List<Track> = emptyList()) {
-        synchronized(playlistQueue) {
-            if (newQueue.isNotEmpty() && newQueue !== playlistQueue) {
-                playlistQueue.clear()
-                playlistQueue.addAll(newQueue)
-                currentIndex = playlistQueue.indexOfFirst { it.id == track.id }
-            } else if (currentIndex == -1 || playlistQueue.getOrNull(currentIndex)?.id != track.id) {
-                val idx = playlistQueue.indexOfFirst { it.id == track.id }
-                if (idx != -1) {
-                    currentIndex = idx
-                } else if (playlistQueue.isEmpty()) {
-                    playlistQueue.add(track)
-                    currentIndex = 0
-                } else {
-                    val insertIdx = (currentIndex + 1).coerceIn(0, playlistQueue.size)
-                    playlistQueue.add(insertIdx, track)
-                    currentIndex = insertIdx
+    fun closeBrowseItemDetails() {
+        _activeBrowseDetails.value = null
+        _isLoadingBrowseDetails.value = false
+    }
+
+    fun saveBrowseDetailsAsPlaylist(details: PlaylistBrowseDetails) {
+        if (details.tracks.isEmpty()) return
+        val newPl = playlistManager.createPlaylist(details.title)
+        details.tracks.forEach { trk ->
+            playlistManager.addTrackToPlaylist(newPl.id, trk)
+        }
+        val remoteTarget = details.playlistId ?: details.browseId
+        if (!remoteTarget.isNullOrBlank()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                repository.saveRemotePlaylistToLibrary(remoteTarget, isSaved = true)
+            }
+        }
+    }
+
+    fun loadCommentsForCurrentTrack(videoId: String, force: Boolean = false) {
+        if (videoId.isBlank()) return
+        if (!force && lastCommentsVideoId == videoId && _trackComments.value.comments.isNotEmpty()) {
+            return
+        }
+        commentsJob?.cancel()
+        if (lastCommentsVideoId != videoId) {
+            lastCommentsVideoId = videoId
+            _trackComments.value = CommentsResult()
+        }
+        commentsJob = viewModelScope.launch {
+            _isLoadingComments.value = true
+            try {
+                val fetched = repository.getTrackComments(videoId)
+                if (lastCommentsVideoId == videoId) {
+                    if (fetched.comments.isNotEmpty() || _trackComments.value.comments.isEmpty()) {
+                        _trackComments.value = fetched
+                    }
+                }
+            } finally {
+                if (lastCommentsVideoId == videoId) {
+                    _isLoadingComments.value = false
                 }
             }
         }
+    }
+
+    fun postCommentOnCurrentTrack(commentText: String, onComplete: (Boolean) -> Unit = {}) {
+        val cur = _currentTrack.value ?: return
+        val text = commentText.trim()
+        if (text.isBlank() || _isPostingComment.value) return
+        viewModelScope.launch {
+            _isPostingComment.value = true
+            try {
+                val currentParams = _trackComments.value.createCommentParams
+                val ok = repository.postTrackComment(cur.id, currentParams, text)
+                if (ok) {
+                    val acc = authState.value
+                    val newComment = YtmComment(
+                        id = "local_${System.currentTimeMillis()}",
+                        authorName = acc?.name?.ifBlank { "You" } ?: "You",
+                        authorAvatarUrl = acc?.avatarUrl.orEmpty(),
+                        publishedTimeText = "Just now",
+                        text = text,
+                        likeCountText = "0"
+                    )
+                    val curResult = _trackComments.value
+                    _trackComments.value = curResult.copy(
+                        comments = listOf(newComment) + curResult.comments
+                    )
+                }
+                onComplete(ok)
+            } finally {
+                _isPostingComment.value = false
+            }
+        }
+    }
+
+    fun playTrackFromSearch(track: Track) {
+        if (track.isCollection || track.isArtistProfile) {
+            openBrowseItemDetails(track)
+        } else {
+            playTrack(track, listOf(track))
+        }
+    }
+
+    fun playHomeItem(item: Track, fallbackQueue: List<Track> = emptyList()) {
+        if (item.browseId.isNullOrBlank() && item.playlistId.isNullOrBlank()) {
+            val playableQueue = fallbackQueue.filter { it.browseId.isNullOrBlank() && it.playlistId.isNullOrBlank() }
+            playTrack(item, playableQueue.ifEmpty { listOf(item) })
+            return
+        }
+        viewModelScope.launch {
+            _isLoadingTrack.value = true
+            val tracks = repository.getPlaylistOrBrowseTracks(item.browseId, item.playlistId)
+                .filter { !it.isCollection && !it.isArtistProfile }
+            if (tracks.isNotEmpty()) {
+                playTrack(tracks.first(), tracks)
+            } else {
+                _isLoadingTrack.value = false
+                openBrowseItemDetails(item)
+            }
+        }
+    }
+
+    fun playTrack(track: Track, newQueue: List<Track> = emptyList()) {
         queueManager.playTrack(track, newQueue)
-        updateQueueState()
-        playTrackExecution(track)
+        val active = queueManager.currentTrack.value ?: track
+        prepareUiForTrack(active)
+        triggerServicePlayCurrent()
     }
 
     fun playTrackAtIndex(index: Int) {
-        val targetTrack = synchronized(playlistQueue) {
-            playlistQueue.getOrNull(index)
-        } ?: queueManager.queueState.value.getOrNull(index) ?: return
-
+        val targetTrack = queueManager.queueState.value.getOrNull(index) ?: return
         queueManager.playTrackAtIndex(index)
-        currentIndex = index
-        updateQueueState()
-        playTrackExecution(targetTrack)
+        prepareUiForTrack(targetTrack)
+        triggerServicePlayCurrent()
     }
 
-    private fun playTrackExecution(track: Track) {
-        playJob?.cancel()
-        playJob = viewModelScope.launch {
-            _currentTrack.value = track
-            _isLoadingTrack.value = true
-            _playbackPosition.value = 0L
-            anchorPosition = 0L
-            val now = SystemClock.elapsedRealtime()
-            anchorTimestamp = now
-            lastGroundTruthSync = now
-            _duration.value = if (track.durationSeconds > 0) track.durationSeconds * 1000L else 0L
+    private fun prepareUiForTrack(track: Track) {
+        val isFav = _favorites.value.any { it.id == track.id }
+        val activeTrack = if (track.isFavorite != isFav) track.copy(isFavorite = isFav) else track
+        _currentTrack.value = activeTrack
+        _isLoadingTrack.value = true
+        _playbackPosition.value = 0L
+        anchorPosition = 0L
+        val now = SystemClock.elapsedRealtime()
+        anchorTimestamp = now
+        lastGroundTruthSync = now
+        _duration.value = if (activeTrack.durationSeconds > 0) activeTrack.durationSeconds * 1000L else 0L
+        triggerLyricsAndRadioForTrack(activeTrack)
+    }
 
-            if (queueManager.queueState.value.size <= 2) {
-                launch(Dispatchers.IO) {
-                    try {
-                        val radioTracks = repository.getRadioTracks(track.id)
-                        if (radioTracks.isNotEmpty()) {
-                            appendRadioTracks(radioTracks)
-                            val currentList = queueManager.queueState.value
-                            if (currentList.size > 1) {
-                                repository.getAudioStreamUrl(currentList[1].url, settingsManager.audioQuality.value)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.d("RanzzVM", "Automix radio fetch: ${e.message}")
-                    }
+    private fun triggerServicePlayCurrent() {
+        val controller = mediaController
+        if (controller != null) {
+            try {
+                val serviceIntent = Intent(getApplication(), PlaybackService::class.java)
+                getApplication<Application>().startService(serviceIntent)
+            } catch (_: Exception) {}
+            controller.sendCustomCommand(
+                androidx.media3.session.SessionCommand(PlaybackService.CUSTOM_ACTION_PLAY_CURRENT, Bundle.EMPTY),
+                Bundle.EMPTY
+            )
+        } else {
+            hasPendingServicePlay = true
+            try {
+                val serviceIntent = Intent(getApplication(), PlaybackService::class.java).apply {
+                    action = PlaybackService.ACTION_PLAY_CURRENT
                 }
-            }
-
-            lyricsJob?.cancel()
-            lyricsJob = viewModelScope.launch(Dispatchers.IO) {
-                _isLoadingLyrics.value = true
-                _currentLyrics.value = null
-                try {
-                    val data = lyricsRepository.getLyrics(
-                        trackId = track.id,
-                        title = track.title,
-                        artist = track.artist,
-                        durationSeconds = track.durationSeconds,
-                        autoTranslate = false
-                    )
-                    _currentLyrics.value = data
-
-                    if (data != null && data.lines.isNotEmpty() && settingsManager.autoTranslate.value) {
-                        val translated = lyricsRepository.translateLyrics(data)
-                        if (_currentTrack.value?.id == track.id) {
-                            _currentLyrics.value = translated
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e("RanzzVM", "Lyrics load error: ${e.message}")
-                } finally {
-                    _isLoadingLyrics.value = false
-                }
-            }
-
-            hasRetriedFallback = false
-            trackStartTime = System.currentTimeMillis()
-            val offlineEntry = offlineDownloadManager.getOfflineEntry(track.id)
-            val resolvedStream = if (offlineEntry != null) {
-                val localUri = Uri.fromFile(java.io.File(offlineEntry.localAudioPath)).toString()
-                com.ranzz.music.data.remote.ResolvedStream(localUri, offlineEntry.mimeType)
-            } else {
-                repository.getAudioStream(track.url, settingsManager.audioQuality.value)
-            }
-            val bestThumbnail = if (offlineEntry?.localArtworkPath != null) {
-                Uri.fromFile(java.io.File(offlineEntry.localArtworkPath)).toString()
-            } else {
-                repository.resolveBestThumbnail(track)
-            }
-            if (resolvedStream != null) {
-                val updatedTrack = track.copy(
-                    streamUrl = resolvedStream.url,
-                    mimeType = resolvedStream.mimeType,
-                    thumbnailUrl = bestThumbnail
-                )
-                _currentTrack.value = updatedTrack
-                queueManager.updateCurrentTrack(updatedTrack)
-
-                val controller = mediaController
-                if (controller != null) {
-                    val mediaMetadata = MediaMetadata.Builder()
-                        .setTitle(updatedTrack.title)
-                        .setArtist(updatedTrack.artist)
-                        .setArtworkUri(Uri.parse(updatedTrack.highResThumbnailUrl))
-                        .setDisplayTitle(updatedTrack.title)
-                        .setExtras(Bundle().apply {
-                            putString(WIDGET_SOURCE_URL_KEY, updatedTrack.url)
-                        })
-                        .build()
-
-                    val mediaItemBuilder = MediaItem.Builder()
-                        .setMediaId(updatedTrack.id)
-                        .setUri(resolvedStream.url)
-                        .setMediaMetadata(mediaMetadata)
-
-                    if (!resolvedStream.mimeType.isNullOrBlank()) {
-                        mediaItemBuilder.setMimeType(resolvedStream.mimeType)
-                    }
-
-                    try {
-                        val serviceIntent = Intent(getApplication(), PlaybackService::class.java)
-                        getApplication<Application>().startService(serviceIntent)
-                    } catch (_: Exception) {}
-
-                    controller.setMediaItem(mediaItemBuilder.build())
-                    controller.prepare()
-                    controller.play()
-                } else {
-                    pendingTrackToPlay = updatedTrack
-                }
-
-                val currentList = queueManager.queueState.value
-                val curIdx = queueManager.currentIndex.value
-                if (currentList.isNotEmpty() && curIdx + 1 < currentList.size) {
-                    val nextTrack = currentList[curIdx + 1]
-                    launch(Dispatchers.IO) {
-                        repository.getAudioStreamUrl(nextTrack.url, settingsManager.audioQuality.value)
-                    }
-                }
-            } else {
-                _isLoadingTrack.value = false
-                Log.e("RanzzMusicViewModel", "Failed to resolve stream URL for ${track.title}")
-                try {
-                    repository.evictStreamUrl(track.url)
-                } catch (_: Throwable) {}
-                val failureCount = queueManager.recordPlaybackFailure()
-                if (failureCount < 3 && queueManager.hasNext()) {
-                    skipNext(userInitiated = false, isErrorRecovery = true)
-                } else {
-                    _isPlaying.value = false
-                }
-            }
+                getApplication<Application>().startService(serviceIntent)
+            } catch (_: Exception) {}
         }
     }
 
@@ -944,57 +1503,39 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getPositionMs(): Long = _playbackPosition.value
 
+    private var lastSkipPreviousTapWallMs = 0L
+
     fun skipNext(userInitiated: Boolean = true, isErrorRecovery: Boolean = false) {
-        val currentQueue = queueManager.queueState.value
-        if (currentQueue.isEmpty()) return
-        val current = _currentTrack.value
-        if (current != null && trackStartTime > 0L) {
-            val playedSec = (System.currentTimeMillis() - trackStartTime) / 1000L
-            if (playedSec in 1..14) {
-                tasteManager.recordTrackSkipped(current)
-            } else if (playedSec >= 25) {
-                tasteManager.recordTrackPlayed(current)
-            }
-        }
-        if (repeatMode.value == Player.REPEAT_MODE_ONE && !userInitiated && !isErrorRecovery) {
-            _currentTrack.value?.let { playTrack(it) }
-            return
-        }
-        val nextTrack = queueManager.getNextTrack(userInitiated = userInitiated, isErrorRecovery = isErrorRecovery)
-        if (nextTrack != null) {
-            currentIndex = queueManager.currentIndex.value
-            updateQueueState()
-            playTrackExecution(nextTrack)
-            val remaining = queueManager.queueState.value.size - currentIndex
-            if (remaining <= 3) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        val freshRadio = repository.getRadioTracks(nextTrack.id)
-                        appendRadioTracks(freshRadio)
-                    } catch (_: Exception) {}
-                }
-            }
+        val controller = mediaController
+        if (controller != null && controller.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT)) {
+            _isLoadingTrack.value = true
+            controller.seekToNext()
         } else {
-            _isPlaying.value = false
-            mediaController?.pause()
+            val fallbackNext = queueManager.getNextTrack(userInitiated = userInitiated, isErrorRecovery = isErrorRecovery)
+            if (fallbackNext != null) {
+                prepareUiForTrack(fallbackNext)
+            }
+            triggerServicePlayCurrent()
         }
     }
 
     fun skipPrevious() {
-        val currentQueue = queueManager.queueState.value
-        if (currentQueue.isEmpty()) return
-        val current = _currentTrack.value
-        if (current != null && trackStartTime > 0L) {
-            val playedSec = (System.currentTimeMillis() - trackStartTime) / 1000L
-            if (playedSec >= 25) {
-                tasteManager.recordTrackPlayed(current)
+        val controller = mediaController
+        if (controller != null) {
+            controller.seekToPrevious()
+        } else {
+            val now = SystemClock.elapsedRealtime()
+            val isDoubleTap = (now - lastSkipPreviousTapWallMs) <= 3500L
+            lastSkipPreviousTapWallMs = now
+            if (!isDoubleTap && _playbackPosition.value > 3500L) {
+                seekTo(0L)
+                return
             }
-        }
-        val prevTrack = queueManager.getPreviousTrack()
-        if (prevTrack != null) {
-            currentIndex = queueManager.currentIndex.value
-            updateQueueState()
-            playTrackExecution(prevTrack)
+            val prevTrack = queueManager.getPreviousTrack()
+            if (prevTrack != null) {
+                prepareUiForTrack(prevTrack)
+            }
+            triggerServicePlayCurrent()
         }
     }
 
@@ -1006,30 +1547,39 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         queueManager.toggleRepeat()
         val next = queueManager.repeatMode.value
         mediaController?.repeatMode = if (next == Player.REPEAT_MODE_ONE) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-        if (next == Player.REPEAT_MODE_ONE) {
-            _currentTrack.value?.let { tasteManager.recordTrackRepeated(it) }
-        }
+        syncWidgetState()
     }
 
     fun toggleFavorite(track: Track) {
         val currentFavs = _favorites.value.toMutableList()
         val exists = currentFavs.any { it.id == track.id }
+        val newLikeState = !exists
         if (exists) {
             currentFavs.removeAll { it.id == track.id }
         } else {
-            currentFavs.add(track.copy(isFavorite = true))
-            tasteManager.recordTrackLiked(track)
+            currentFavs.add(0, track.copy(isFavorite = true))
         }
         _favorites.value = currentFavs
-        saveStoredFavorites(currentFavs)
-        syncWidgetState()
+        saveStoredFavorites(currentFavs) {
+            try {
+                getApplication<Application>().sendBroadcast(
+                    Intent(WIDGET_FAVORITES_CHANGED).setPackage(getApplication<Application>().packageName)
+                )
+            } catch (_: Exception) {}
+            syncWidgetState()
+        }
 
         if (_currentTrack.value?.id == track.id) {
-            val updated = _currentTrack.value?.copy(isFavorite = !exists)
+            val updated = _currentTrack.value?.copy(isFavorite = newLikeState)
             _currentTrack.value = updated
             if (updated != null) {
                 queueManager.updateCurrentTrack(updated)
             }
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.setTrackLikeStatus(track.id, isLiked = newLikeState)
+            repository.invalidateHomeCache()
         }
     }
 
@@ -1039,19 +1589,45 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun syncLikedSongs() {
         viewModelScope.launch {
-            _isLoadingTrending.value = true
             val liked = repository.getLikedTracks()
             if (liked.isNotEmpty()) {
                 val currentFavs = _favorites.value.toMutableList()
-                liked.forEach { track ->
-                    if (currentFavs.none { it.id == track.id }) {
-                        currentFavs.add(track.copy(isFavorite = true))
+                val existingById = currentFavs.associateBy { it.id }.toMutableMap()
+                val merged = mutableListOf<Track>()
+                val seen = HashSet<String>()
+                for (track in liked) {
+                    if (seen.add(track.id)) {
+                        val existing = existingById[track.id]
+                        val dur = if (track.durationSeconds > 0L) track.durationSeconds else (existing?.durationSeconds ?: 0L)
+                        merged.add(track.copy(durationSeconds = dur, isFavorite = true))
                     }
                 }
-                _favorites.value = currentFavs
-                saveStoredFavorites(currentFavs)
+                for (localTrack in currentFavs) {
+                    if (seen.add(localTrack.id)) {
+                        merged.add(localTrack.copy(isFavorite = true))
+                    }
+                }
+                _favorites.value = merged
+                saveStoredFavorites(merged)
+                val cur = _currentTrack.value
+                if (cur != null) {
+                    val isFav = merged.any { it.id == cur.id }
+                    if (cur.isFavorite != isFav) {
+                        val updated = cur.copy(isFavorite = isFav)
+                        _currentTrack.value = updated
+                        queueManager.updateCurrentTrack(updated)
+                    }
+                }
             }
-            _isLoadingTrending.value = false
+        }
+    }
+
+    fun syncUserPlaylists() {
+        viewModelScope.launch {
+            val remotePlaylists = repository.getUserPlaylists()
+            if (remotePlaylists.isNotEmpty()) {
+                playlistManager.upsertSyncedPlaylists(remotePlaylists)
+            }
         }
     }
 
@@ -1071,17 +1647,70 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         com.ranzz.music.data.auth.AuthManager.getInstance().resetToOriginalProfile()
     }
 
+    fun onAppBackgrounded(currentPage: Int) {
+        val snapshot = UiSnapshot(
+            lastPage = currentPage,
+            isPlayerExpanded = _isPlayerExpanded.value,
+            homeSections = _homeSections.value,
+            trendingTracks = _trendingTracks.value
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            UiStateCache.saveSnapshot(getApplication(), snapshot)
+        }
+        progressJob?.cancel()
+        if (lyricsJob?.isActive == true || _currentLyrics.value == null) {
+            lastLyricsLoadedForId = null
+        }
+        lyricsJob?.cancel()
+        searchJob?.cancel()
+        suggestJob?.cancel()
+        genreJob?.cancel()
+    }
+
+    fun onAppForegrounded() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val snapshot = UiStateCache.loadSnapshot(getApplication())
+            if (snapshot != null) {
+                _restoredPage.value = snapshot.lastPage
+                if (_homeSections.value.isEmpty() && snapshot.homeSections.isNotEmpty()) {
+                    val rotatedSnapshot = personalizeHomeShelves(
+                        shelves = snapshot.homeSections,
+                        rotateTop = true
+                    )
+                    _homeSections.value = rotatedSnapshot
+                } else if (_homeSections.value.isNotEmpty()) {
+                    _homeSections.value = personalizeHomeShelves(
+                        shelves = _homeSections.value,
+                        rotateTop = true
+                    )
+                }
+                if (_trendingTracks.value.isEmpty() && snapshot.trendingTracks.isNotEmpty()) {
+                    _trendingTracks.value = snapshot.trendingTracks
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (_isPlaying.value) {
+                    startProgressTracking()
+                }
+            }
+            val needsRefresh = snapshot == null ||
+                (System.currentTimeMillis() - snapshot.savedAtMs) > 45 * 1000L
+            if (needsRefresh || _homeSections.value.isEmpty()) {
+                loadTrending()
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
-        queueManager.isUiControllerActive = false
         try {
             getApplication<Application>().unregisterReceiver(mediaActionReceiver)
         } catch (_: Exception) {}
         stopProgressTracking()
+        sleepTimerJob?.cancel()
         suggestJob?.cancel()
         genreJob?.cancel()
         searchJob?.cancel()
-        playJob?.cancel()
         lyricsJob?.cancel()
         controllerFuture?.let { MediaController.releaseFuture(it) }
     }

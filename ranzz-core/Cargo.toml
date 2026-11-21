@@ -7,12 +7,16 @@ description = "High-performance native core engine for Ranzz Music Player"
 
 [lib]
 name = "ranzz_core"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 jni = "0.21"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-regex = "1.10"
-lazy_static = "1.4"
 
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

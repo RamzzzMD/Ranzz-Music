@@ -10,12 +10,13 @@
 .DS_Store
 /build
 /captures
-/target
 .externalNativeBuild
 .cxx
 local.properties
 app/build
-app/src/main/jniLibs
 *.apk
 *.aab
+app/*.keystore
 .agents/
+
+__pycache__/

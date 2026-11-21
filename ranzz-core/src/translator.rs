@@ -12,6 +12,7 @@ struct DeepLRequest<'a> {
 
 #[derive(Deserialize)]
 struct DeepLTranslationItem {
+    #[serde(default)]
     text: String,
 }
 
@@ -20,12 +21,15 @@ struct DeepLResponse {
     translations: Option<Vec<DeepLTranslationItem>>,
 }
 
-/** Builds JSON payload for DeepL Mobile batch translation request. */
+/** Builds JSON payload for DeepL Mobile batch translation request across supported languages. */
 pub fn build_payload(texts: &[String], target_lang: &str) -> String {
-    let normalized_lang = if target_lang.trim().is_empty() {
+    let trimmed = target_lang.trim().to_lowercase();
+    let normalized_lang = if trimmed.is_empty() {
+        "id"
+    } else if trimmed == "in" {
         "id"
     } else {
-        target_lang.trim()
+        trimmed.as_str()
     };
 
     let req = DeepLRequest {
@@ -65,6 +69,9 @@ mod tests {
         assert!(json.contains("\"target_lang\":\"id\""));
         assert!(json.contains("Hello"));
         assert!(json.contains("World"));
+
+        let json_ja = build_payload(&lines, "JA");
+        assert!(json_ja.contains("\"target_lang\":\"ja\""));
     }
 
     #[test]

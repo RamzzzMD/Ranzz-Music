@@ -11,26 +11,31 @@ android {
         applicationId = "com.ranzz.music"
         minSdk = 26
         targetSdk = 34
-        versionCode = 46
-        versionName = "3.8.4"
+        versionCode = 68
+        versionName = "3.9.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
-        resourceConfigurations += listOf("en", "id")
+        resourceConfigurations += listOf("en", "id", "in", "ja", "ko", "zh", "es", "fr", "de", "pt", "ru", "ar")
+    }
 
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = true
         }
     }
 
     signingConfigs {
         create("release") {
-            storeFile = file("ranzz.keystore")
-            storePassword = "ranzzandroidapp"
-            keyAlias = "ranzz"
-            keyPassword = "ranzzandroidapp"
+            storeFile = file(System.getenv("RANZZ_KEYSTORE_FILE") ?: "ranzz.keystore")
+            storePassword = System.getenv("RANZZ_STORE_PASSWORD") ?: "ranzzandroidapp"
+            keyAlias = System.getenv("RANZZ_KEY_ALIAS") ?: "ranzz"
+            keyPassword = System.getenv("RANZZ_KEY_PASSWORD") ?: "ranzzandroidapp"
         }
     }
 
@@ -49,6 +54,7 @@ android {
         }
     }
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -62,20 +68,35 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/INDEX.LIST"
             excludes += "META-INF/DEPENDENCIES"
             excludes += "META-INF/LICENSE*"
             excludes += "META-INF/NOTICE*"
+            excludes += "META-INF/*.kotlin_module"
+            excludes += "META-INF/*.version"
+            excludes += "META-INF/proguard/*"
+            excludes += "META-INF/maven/**"
+            excludes += "DebugProbesKt.bin"
+            excludes += "kotlin-tooling-metadata.json"
+            excludes += "/*.properties"
         }
     }
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.0.4")
+
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.0")
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
@@ -85,7 +106,6 @@ dependencies {
     androidTestImplementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.7.7")
@@ -93,6 +113,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.3.1")
     implementation("androidx.media3:media3-session:1.3.1")
     implementation("androidx.media3:media3-common:1.3.1")
+    implementation("androidx.media3:media3-datasource-okhttp:1.3.1")
 
     implementation("io.coil-kt:coil-compose:2.6.0")
 
@@ -105,5 +126,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

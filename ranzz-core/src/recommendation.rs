@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CandidateTrack {
@@ -21,40 +21,10 @@ pub struct TasteProfile {
     pub top_artists: Vec<String>,
 }
 
-pub fn rank_candidates(mut candidates: Vec<CandidateTrack>, profile: &TasteProfile) -> Vec<CandidateTrack> {
-    if candidates.is_empty() {
-        return candidates;
-    }
-
-    let top_artists_set: HashSet<String> = profile
-        .top_artists
-        .iter()
-        .map(|a| a.trim().to_lowercase())
-        .collect();
-
-    candidates.sort_by(|a, b| {
-        let score_a = calculate_affinity_score(a, profile, &top_artists_set);
-        let score_b = calculate_affinity_score(b, profile, &top_artists_set);
-        score_b.cmp(&score_a)
-    });
-
+/**
+ * Pure pass-through: Ranzz Music local recommendation ranking is disabled so
+ * 100% of YouTube Music's native algorithm sequence is preserved untouched.
+ */
+pub fn rank_candidates(candidates: Vec<CandidateTrack>, _profile: &TasteProfile) -> Vec<CandidateTrack> {
     candidates
-}
-
-fn calculate_affinity_score(
-    track: &CandidateTrack,
-    profile: &TasteProfile,
-    top_artists: &HashSet<String>,
-) -> i32 {
-    let mut score = *profile.scores.get(&track.id).unwrap_or(&0);
-    if score < 0 {
-        score = 0;
-    }
-
-    let artist_clean = track.artist.trim().to_lowercase();
-    if top_artists.contains(&artist_clean) {
-        score += 5;
-    }
-
-    score
 }

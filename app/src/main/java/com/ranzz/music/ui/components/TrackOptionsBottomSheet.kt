@@ -3,23 +3,28 @@ package com.ranzz.music.ui.components
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.AddCircleOutline
+import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Downloading
+import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.FormatListBulleted
 import androidx.compose.material.icons.outlined.QueueMusic
@@ -35,6 +40,9 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +58,10 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.ranzz.music.R
 import com.ranzz.music.data.model.Track
+import com.ranzz.music.data.settings.AudioSubQuality
+import com.ranzz.music.data.settings.SettingsManager
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import com.ranzz.music.ui.theme.RanzzAppTheme
 import com.ranzz.music.ui.theme.Typography
 import com.ranzz.music.viewmodel.MusicViewModel
@@ -63,15 +75,24 @@ fun TrackOptionsBottomSheet(
     onOpenLyrics: () -> Unit = {},
     onOpenQueue: () -> Unit = {},
     onAddToPlaylist: () -> Unit = {},
-    onOpenSettings: () -> Unit = {}
+    onOpenSettings: () -> Unit = {},
+    onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scrollState = rememberScrollState()
     val colors = RanzzAppTheme.colors
     val context = LocalContext.current
-    val downloadStatuses by viewModel.downloadStatuses.collectAsState()
+    val watchLaterTracks by viewModel.watchLaterTracks.collectAsState()
+    val lyricsLang by remember { SettingsManager.getInstance().lyricsLanguage }.collectAsState()
+    val isInWatchLater = remember(watchLaterTracks, track.id) {
+        watchLaterTracks.any { it.id == track.id }
+    }
+    var showSleepTimerDialog by remember { mutableStateOf(false) }
+    var showDownloadQualityDialog by remember { mutableStateOf(false) }
+    val offlineTracks by viewModel.offlineTracks.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
-    val status = downloadStatuses[track.id] ?: com.ranzz.music.data.download.DownloadStatus.NONE
-    val progress = downloadProgress[track.id] ?: 0
+    val activeProgress = downloadProgress[track.id]
+    val isOffline = remember(offlineTracks, track.id) { offlineTracks.any { it.track.id == track.id } }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -90,6 +111,8 @@ fun TrackOptionsBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(scrollState)
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp, vertical = 6.dp)
         ) {
             Row(
@@ -132,6 +155,26 @@ fun TrackOptionsBottomSheet(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            if (track.isCollection || track.isArtistProfile) {
+                TrackOptionItem(
+                    icon = Icons.Outlined.FormatListBulleted,
+                    title = "Open ${track.title}",
+                    onClick = {
+                        onDismiss()
+                        viewModel.openBrowseItemDetails(track)
+                    }
+                )
+
+                TrackOptionItem(
+                    icon = Icons.Outlined.QueueMusic,
+                    title = "Play Mix / Album",
+                    onClick = {
+                        onDismiss()
+                        viewModel.playHomeItem(track)
+                    }
+                )
+            }
+
             TrackOptionItem(
                 icon = Icons.Outlined.Share,
                 title = stringResource(R.string.player_share),
@@ -143,48 +186,26 @@ fun TrackOptionsBottomSheet(
                             putExtra(Intent.EXTRA_TEXT, shareTemplate)
                             type = "text/plain"
                         }
-                        context.startActivity(Intent.createChooser(sendIntent, context.getString(R.string.player_share_via)))
+                        val chooser = Intent.createChooser(sendIntent, context.getString(R.string.player_share_via)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(chooser)
                     } catch (_: Exception) {}
                 }
             )
 
             TrackOptionItem(
                 icon = Icons.Outlined.Translate,
-                title = "Lyrics • " + stringResource(R.string.player_indonesian),
+                title = stringResource(R.string.player_lyrics) + " • " + lyricsLang.displayName.substringBefore(" ("),
                 onClick = {
                     onDismiss()
                     onOpenLyrics()
                 }
             )
 
-            val downloadIcon = when (status) {
-                com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> Icons.Default.DownloadDone
-                com.ranzz.music.data.download.DownloadStatus.DOWNLOADING -> Icons.Outlined.Downloading
-                else -> Icons.Outlined.Download
-            }
-            val downloadTitle = when (status) {
-                com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> "Tersimpan Offline (Hapus Unduhan)"
-                com.ranzz.music.data.download.DownloadStatus.DOWNLOADING -> "Mengunduh Lagu... ($progress%)"
-                else -> "Download Lagu (Offline)"
-            }
-            val downloadTint = when (status) {
-                com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> Color(0xFF34C759)
-                else -> colors.textPrimary
-            }
-
-            TrackOptionItem(
-                icon = downloadIcon,
-                title = downloadTitle,
-                iconTint = downloadTint,
-                onClick = {
-                    viewModel.toggleDownload(track)
-                    onDismiss()
-                }
-            )
-
             TrackOptionItem(
                 icon = if (track.isFavorite) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
-                title = if (track.isFavorite) "Disukai (Tersimpan)" else "Add to Liked Songs",
+                title = if (track.isFavorite) stringResource(R.string.player_liked_saved) else stringResource(R.string.player_add_liked),
                 iconTint = if (track.isFavorite) Color(0xFFFF3B30) else colors.textPrimary,
                 onClick = {
                     viewModel.toggleFavorite(track)
@@ -193,17 +214,56 @@ fun TrackOptionsBottomSheet(
             )
 
             TrackOptionItem(
-                icon = Icons.Outlined.AddCircleOutline,
-                title = stringResource(R.string.player_add_to_playlist),
+                icon = if (isInWatchLater) Icons.Default.Bookmark else Icons.Outlined.BookmarkBorder,
+                title = if (isInWatchLater) stringResource(R.string.player_remove_watch_later) else stringResource(R.string.player_save_watch_later),
+                iconTint = if (isInWatchLater) colors.accent else colors.textPrimary,
                 onClick = {
+                    viewModel.toggleWatchLater(track)
                     onDismiss()
-                    onAddToPlaylist()
                 }
             )
 
             TrackOptionItem(
+                icon = if (isOffline) Icons.Default.DownloadDone else Icons.Outlined.Download,
+                title = when {
+                    activeProgress != null -> stringResource(R.string.player_downloading_percent, (activeProgress * 100).toInt())
+                    isOffline -> stringResource(R.string.player_remove_offline)
+                    else -> stringResource(R.string.player_download_offline)
+                },
+                iconTint = if (isOffline) colors.accent else colors.textPrimary,
+                onClick = {
+                    if (isOffline) {
+                        viewModel.deleteOfflineTrack(track.id)
+                        onDismiss()
+                    } else if (activeProgress == null) {
+                        showDownloadQualityDialog = true
+                    }
+                }
+            )
+
+            TrackOptionItem(
+                icon = Icons.Outlined.AddCircleOutline,
+                title = stringResource(R.string.player_add_to_playlist),
+                onClick = {
+                    onAddToPlaylist()
+                    onDismiss()
+                }
+            )
+
+            if (onRemoveFromPlaylist != null) {
+                TrackOptionItem(
+                    icon = Icons.Default.DeleteOutline,
+                    title = stringResource(R.string.lib_remove_from_playlist),
+                    iconTint = Color(0xFFFF3B30),
+                    onClick = {
+                        onRemoveFromPlaylist()
+                    }
+                )
+            }
+
+            TrackOptionItem(
                 icon = Icons.Outlined.QueueMusic,
-                title = "Add to Queue",
+                title = stringResource(R.string.player_add_to_queue),
                 onClick = {
                     viewModel.addToQueue(track)
                     onDismiss()
@@ -212,10 +272,18 @@ fun TrackOptionsBottomSheet(
 
             TrackOptionItem(
                 icon = Icons.Outlined.FormatListBulleted,
-                title = "Go to Queue",
+                title = stringResource(R.string.player_go_to_queue),
                 onClick = {
                     onDismiss()
                     onOpenQueue()
+                }
+            )
+
+            TrackOptionItem(
+                icon = Icons.Outlined.Bedtime,
+                title = stringResource(R.string.sleep_timer_title),
+                onClick = {
+                    showSleepTimerDialog = true
                 }
             )
 
@@ -228,8 +296,54 @@ fun TrackOptionsBottomSheet(
                 }
             )
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(24.dp))
         }
+    }
+
+    if (showDownloadQualityDialog) {
+        AlertDialog(
+            onDismissRequest = { showDownloadQualityDialog = false },
+            title = { Text(stringResource(R.string.player_choose_download_quality), style = Typography.titleLarge, color = colors.textPrimary) },
+            text = {
+                Column {
+                    AudioSubQuality.values().forEach { sub ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    viewModel.downloadTrack(track, sub)
+                                    showDownloadQualityDialog = false
+                                    onDismiss()
+                                }
+                                .padding(vertical = 10.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(sub.badge, style = Typography.bodyMedium, fontWeight = FontWeight.Bold, color = colors.textPrimary)
+                                Text(sub.subtitleId, style = Typography.bodySmall, color = colors.textMuted)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDownloadQualityDialog = false }) {
+                    Text(stringResource(R.string.lib_cancel), color = colors.textMuted)
+                }
+            },
+            containerColor = colors.surface
+        )
+    }
+
+    if (showSleepTimerDialog) {
+        SleepTimerDialog(
+            viewModel = viewModel,
+            onDismiss = {
+                showSleepTimerDialog = false
+                onDismiss()
+            }
+        )
     }
 }
 

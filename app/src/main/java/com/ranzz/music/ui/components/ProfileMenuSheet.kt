@@ -16,7 +16,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -28,14 +31,15 @@ import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,12 +49,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.ranzz.music.R
+import com.ranzz.music.data.auth.AuthManager
 import com.ranzz.music.data.auth.UserAccount
 import com.ranzz.music.ui.theme.RanzzAppTheme
 import com.ranzz.music.ui.theme.Typography
@@ -70,9 +77,15 @@ fun ProfileMenuSheet(
     var showStatsDialog by remember { mutableStateOf(false) }
     var showRecentsDialog by remember { mutableStateOf(false) }
     var showEditProfileDialog by remember { mutableStateOf(false) }
+    var avatarError by remember(account?.avatarUrl) { mutableStateOf(false) }
 
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
-    val onRepeatTracks by viewModel.onRepeatTracks.collectAsState()
+
+    LaunchedEffect(account?.cookie) {
+        if (account != null && account.isGoogleLinked && (account.avatarUrl.isBlank() || account.name.isBlank() || account.name == "YouTube User")) {
+            AuthManager.getInstance().refreshAccountInfoIfNeeded(force = true)
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -91,8 +104,10 @@ fun ProfileMenuSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 36.dp)
+                .padding(bottom = 28.dp)
         ) {
             Box(
                 modifier = Modifier
@@ -101,7 +116,7 @@ fun ProfileMenuSheet(
                     .border(1.dp, colors.border, RoundedCornerShape(16.dp))
             ) {
                 androidx.compose.foundation.Image(
-                    painter = androidx.compose.ui.res.painterResource(com.ranzz.music.R.drawable.banner_ranzz_music),
+                    painter = androidx.compose.ui.res.painterResource(R.drawable.banner_ranzz_music),
                     contentDescription = null,
                     modifier = Modifier.matchParentSize(),
                     contentScale = ContentScale.Crop,
@@ -114,8 +129,8 @@ fun ProfileMenuSheet(
                             androidx.compose.ui.graphics.Brush.horizontalGradient(
                                 colors = listOf(
                                     androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.88f),
-                                    androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.50f),
-                                    androidx.compose.ui.graphics.Color.Transparent
+                                    androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f),
+                                    androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.25f)
                                 )
                             )
                         )
@@ -125,162 +140,172 @@ fun ProfileMenuSheet(
                         .fillMaxWidth()
                         .padding(16.dp)
                 ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showEditProfileDialog = true },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(contentAlignment = Alignment.BottomEnd) {
-                        if (account?.avatarUrl != null && account.avatarUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = account.avatarUrl,
-                                contentDescription = account.name,
-                                modifier = Modifier
-                                    .size(54.dp)
-                                    .clip(CircleShape)
-                                    .border(1.5.dp, colors.accent, CircleShape),
-                                contentScale = ContentScale.Crop
-                            )
-                        } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showEditProfileDialog = true },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(contentAlignment = Alignment.BottomEnd) {
+                            if (account?.avatarUrl != null && account.avatarUrl.isNotBlank() && !avatarError) {
+                                AsyncImage(
+                                    model = account.avatarUrl,
+                                    contentDescription = account.name,
+                                    onError = { avatarError = true },
+                                    modifier = Modifier
+                                        .size(54.dp)
+                                        .clip(CircleShape)
+                                        .border(1.5.dp, colors.accent, CircleShape),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(54.dp)
+                                        .clip(CircleShape)
+                                        .background(colors.border),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    androidx.compose.foundation.Image(
+                                        painter = androidx.compose.ui.res.painterResource(R.drawable.logo_monochrome),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
+                            }
                             Box(
                                 modifier = Modifier
-                                    .size(54.dp)
+                                    .size(20.dp)
                                     .clip(CircleShape)
-                                    .background(colors.card),
+                                    .background(colors.accent)
+                                    .border(1.5.dp, colors.background, CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
-                                androidx.compose.foundation.Image(
-                                    painter = androidx.compose.ui.res.painterResource(com.ranzz.music.R.drawable.logo_monochrome),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(32.dp)
+                                Icon(
+                                    imageVector = Icons.Outlined.PhotoCamera,
+                                    contentDescription = "Edit Photo",
+                                    tint = colors.background,
+                                    modifier = Modifier.size(11.dp)
                                 )
                             }
                         }
 
-                        Box(
-                            modifier = Modifier
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(colors.accent)
-                                .border(1.5.dp, colors.card, CircleShape),
-                            contentAlignment = Alignment.Center
+                        Spacer(modifier = Modifier.width(16.dp))
+
+                        val displayName = account?.name
+                            ?.takeIf { it.isNotBlank() && it != "YouTube User" }
+                            ?: account?.channelHandle?.removePrefix("@")?.takeIf { it.isNotBlank() }
+                            ?: account?.email?.substringBefore("@")?.takeIf { it.isNotBlank() }
+                            ?: if (account?.isGoogleLinked == true) "YouTube Music User" else stringResource(R.string.profile_default_name)
+
+                        val displaySub = if (account?.isGoogleLinked == true) {
+                            account.email.ifBlank {
+                                account.channelHandle.ifBlank { stringResource(R.string.profile_google_connected) }
+                            }
+                        } else {
+                            stringResource(R.string.profile_tap_to_login)
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = displayName,
+                                style = Typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                color = androidx.compose.ui.graphics.Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = displaySub,
+                                style = Typography.bodyMedium,
+                                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.72f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { showEditProfileDialog = true },
+                            modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.Edit,
-                                contentDescription = "Edit Foto",
-                                tint = colors.background,
-                                modifier = Modifier.size(11.dp)
+                                contentDescription = "Edit Profile",
+                                tint = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(16.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
+                    HorizontalDivider(color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.16f), thickness = 1.dp)
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = account?.name ?: "Ranzz Music Lover",
-                            style = Typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                            color = colors.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = if (account?.isGoogleLinked == true) {
-                                account.email.ifBlank { "Akun Google Terhubung" }
-                            } else {
-                                "Ketuk untuk Edit Nama & Foto"
-                            },
-                            style = Typography.bodyMedium,
-                            color = colors.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { showEditProfileDialog = true },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Edit,
-                            contentDescription = "Edit Profil",
-                            tint = colors.textMuted,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-                HorizontalDivider(color = colors.border, thickness = 1.dp)
-                Spacer(modifier = Modifier.height(14.dp))
-
-                if (account?.isGoogleLinked == true) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                onLogoutClick()
-                                onDismiss()
-                            },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
+                    if (account?.isGoogleLinked == true) {
+                        Row(
                             modifier = Modifier
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(colors.border),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .clickable {
+                                    onLogoutClick()
+                                    onDismiss()
+                                },
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Logout,
-                                contentDescription = "Logout",
-                                tint = colors.textPrimary,
-                                modifier = Modifier.size(16.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(androidx.compose.ui.graphics.Color.White.copy(alpha = 0.14f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Logout,
+                                    contentDescription = "Logout",
+                                    tint = androidx.compose.ui.graphics.Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = stringResource(R.string.profile_switch_account),
+                                style = Typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = androidx.compose.ui.graphics.Color.White
                             )
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = "Ganti / Keluar Akun Google",
-                            style = Typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                            color = colors.textPrimary
-                        )
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                onLoginClick()
-                                onDismiss()
-                            },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
+                    } else {
+                        Row(
                             modifier = Modifier
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(colors.accent),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .clickable {
+                                    onLoginClick()
+                                    onDismiss()
+                                },
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "Add",
-                                tint = colors.background,
-                                modifier = Modifier.size(16.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(androidx.compose.ui.graphics.Color.White),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "Add",
+                                    tint = androidx.compose.ui.graphics.Color.Black,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = stringResource(R.string.profile_connect_google),
+                                style = Typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = androidx.compose.ui.graphics.Color.White
                             )
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = "Hubungkan Akun Google",
-                            style = Typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = colors.textPrimary
-                        )
                     }
                 }
             }
-        }
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -289,30 +314,30 @@ fun ProfileMenuSheet(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 DrawerMenuItem(
-                    icon = Icons.Outlined.Edit,
-                    title = "Edit Nama & Foto Profil",
-                    subtitle = "Ubah nama panggilan & ganti custom PP",
-                    onClick = { showEditProfileDialog = true }
-                )
-
-                DrawerMenuItem(
                     icon = Icons.Outlined.BarChart,
-                    title = "Statistik Mendengarkan",
-                    subtitle = "Analisis selera & artis favoritmu",
+                    title = stringResource(R.string.profile_stats),
+                    subtitle = stringResource(R.string.profile_stats_sub),
                     onClick = { showStatsDialog = true }
                 )
 
                 DrawerMenuItem(
                     icon = Icons.Outlined.History,
-                    title = "Terakhir Diputar",
-                    subtitle = "${recentlyPlayed.size} lagu baru saja diputar",
+                    title = stringResource(R.string.home_recently_played),
+                    subtitle = stringResource(R.string.profile_recents_sub, recentlyPlayed.size),
                     onClick = { showRecentsDialog = true }
                 )
 
                 DrawerMenuItem(
+                    icon = Icons.Outlined.Edit,
+                    title = "Edit Profile",
+                    subtitle = "Change display name & profile photo",
+                    onClick = { showEditProfileDialog = true }
+                )
+
+                DrawerMenuItem(
                     icon = Icons.Outlined.Settings,
-                    title = "Pengaturan & Privasi",
-                    subtitle = "Kualitas audio, tema, cache & preferensi",
+                    title = stringResource(R.string.profile_settings_privacy),
+                    subtitle = stringResource(R.string.profile_settings_sub),
                     onClick = {
                         onDismiss()
                         onOpenSettingsClick()
@@ -330,10 +355,24 @@ fun ProfileMenuSheet(
         )
     }
 
+    val favorites by viewModel.favorites.collectAsState()
+
     if (showStatsDialog) {
-        val totalPlays = remember(showStatsDialog) { viewModel.tasteManager.getTotalPlays() }
-        val uniqueArtists = remember(showStatsDialog) { viewModel.tasteManager.getUniqueArtistsCount() }
-        val topArtists = remember(showStatsDialog) { viewModel.tasteManager.getTopArtists(5) }
+        val totalPlays = remember(showStatsDialog, recentlyPlayed) { recentlyPlayed.size }
+        val uniqueArtists = remember(showStatsDialog, recentlyPlayed, favorites) {
+            (recentlyPlayed + favorites).mapNotNull { it.artist.trim().takeIf { a -> a.isNotBlank() && a != "Unknown Artist" }?.lowercase() }.distinct().size
+        }
+        val topArtists = remember(showStatsDialog, recentlyPlayed, favorites) {
+            (recentlyPlayed + favorites)
+                .map { it.artist.trim() }
+                .filter { it.isNotBlank() && it != "Unknown Artist" }
+                .groupingBy { it }
+                .eachCount()
+                .entries
+                .sortedByDescending { it.value }
+                .take(5)
+                .map { Pair(it.key, it.value) }
+        }
 
         AlertDialog(
             onDismissRequest = { showStatsDialog = false },
@@ -347,7 +386,7 @@ fun ProfileMenuSheet(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Statistik Mendengarkan",
+                        text = stringResource(R.string.profile_stats),
                         style = Typography.titleLarge,
                         color = colors.textPrimary
                     )
@@ -362,7 +401,7 @@ fun ProfileMenuSheet(
             },
             confirmButton = {
                 TextButton(onClick = { showStatsDialog = false }) {
-                    Text("Tutup", color = colors.textPrimary)
+                    Text(stringResource(R.string.action_close), color = colors.textPrimary)
                 }
             },
             containerColor = colors.background
@@ -382,7 +421,7 @@ fun ProfileMenuSheet(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Terakhir Diputar",
+                        text = stringResource(R.string.home_recently_played),
                         style = Typography.titleLarge,
                         color = colors.textPrimary
                     )
@@ -391,7 +430,7 @@ fun ProfileMenuSheet(
             text = {
                 if (recentlyPlayed.isEmpty()) {
                     Text(
-                        text = "Belum ada riwayat lagu yang diputar.",
+                        text = stringResource(R.string.home_no_history),
                         style = Typography.bodyMedium,
                         color = colors.textMuted
                     )
@@ -409,7 +448,7 @@ fun ProfileMenuSheet(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(colors.card)
                                     .clickable {
-                                        viewModel.playTrack(track)
+                                        viewModel.playTrack(track, recentlyPlayed)
                                         showRecentsDialog = false
                                         onDismiss()
                                     }
@@ -448,7 +487,7 @@ fun ProfileMenuSheet(
             },
             confirmButton = {
                 TextButton(onClick = { showRecentsDialog = false }) {
-                    Text("Tutup", color = colors.textPrimary)
+                    Text(stringResource(R.string.action_close), color = colors.textPrimary)
                 }
             },
             containerColor = colors.background
@@ -530,13 +569,13 @@ fun ListeningStatsDiagram(
                     .padding(12.dp)
             ) {
                 Text(
-                    text = "Total Putar",
+                    text = stringResource(R.string.profile_total_plays),
                     style = Typography.bodySmall,
                     color = colors.textMuted
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "$totalPlays kali",
+                    text = stringResource(R.string.profile_total_plays_val, totalPlays),
                     style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = colors.textPrimary
                 )
@@ -551,13 +590,13 @@ fun ListeningStatsDiagram(
                     .padding(12.dp)
             ) {
                 Text(
-                    text = "Artis Didengar",
+                    text = stringResource(R.string.profile_artists_heard),
                     style = Typography.bodySmall,
                     color = colors.textMuted
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "$uniqueArtists artis",
+                    text = stringResource(R.string.profile_artists_heard_val, uniqueArtists),
                     style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = colors.textPrimary
                 )
@@ -574,7 +613,7 @@ fun ListeningStatsDiagram(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "Belum cukup data. Putar lebih banyak lagu untuk melihat diagram!",
+                    text = stringResource(R.string.profile_stats_not_enough),
                     style = Typography.bodyMedium,
                     color = colors.textMuted,
                     textAlign = TextAlign.Center
@@ -597,12 +636,12 @@ fun ListeningStatsDiagram(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "DIAGRAM FREKUENSI ARTIS",
+                        text = stringResource(R.string.profile_chart_title),
                         style = Typography.labelSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
                         color = colors.textMuted
                     )
                     Text(
-                        text = "Top ${topArtists.size}",
+                        text = stringResource(R.string.profile_top_artists, topArtists.size),
                         style = Typography.labelSmall.copy(fontSize = 10.sp),
                         color = colors.textSecondary
                     )
@@ -663,7 +702,7 @@ fun ListeningStatsDiagram(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Peringkat Artis Teratas",
+                text = stringResource(R.string.profile_top_ranking),
                 style = Typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                 color = colors.textPrimary,
                 modifier = Modifier.padding(bottom = 8.dp)

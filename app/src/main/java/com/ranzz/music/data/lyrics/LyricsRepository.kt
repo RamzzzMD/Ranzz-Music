@@ -3,17 +3,18 @@ package com.ranzz.music.data.lyrics
 import android.content.Context
 import android.util.Log
 import android.util.LruCache
+import com.ranzz.music.data.settings.LyricsLanguage
+import com.ranzz.music.data.settings.SettingsManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URLEncoder
-import java.util.concurrent.TimeUnit
 
 class LyricsRepository(private val context: Context) {
 
@@ -22,22 +23,34 @@ class LyricsRepository(private val context: Context) {
     private val memCache = LruCache<String, LyricsData>(100)
     private val negativeCache = LruCache<String, Long>(200)
     private val NEGATIVE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000L
-    private val diskCacheDir = File(context.cacheDir, "lyrics_cache_v7").apply {
+    private val appContext = context.applicationContext
+    private val diskCacheDir = File(appContext.cacheDir, "lyrics_cache_v8").apply {
         mkdirs()
-        try {
-            val oldCache6 = File(context.cacheDir, "lyrics_cache_v6")
-            if (oldCache6.exists()) oldCache6.deleteRecursively()
-            val oldCache5 = File(context.cacheDir, "lyrics_cache_v5")
-            if (oldCache5.exists()) oldCache5.deleteRecursively()
-            val oldCache4 = File(context.cacheDir, "lyrics_cache_v4")
-            if (oldCache4.exists()) oldCache4.deleteRecursively()
-        } catch (_: Exception) {}
+    }
+
+    init {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            try {
+                for (v in 4..7) {
+                    val oldCache = File(appContext.cacheDir, "lyrics_cache_v$v")
+                    if (oldCache.exists()) oldCache.deleteRecursively()
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     private sealed class LyricsFetchResult {
         data class Success(val data: LyricsData) : LyricsFetchResult()
         object Empty : LyricsFetchResult()
         object Error : LyricsFetchResult()
+    }
+
+    private fun resolveTargetLang(): LyricsLanguage {
+        return try {
+            SettingsManager.getInstance().lyricsLanguage.value
+        } catch (_: Throwable) {
+            LyricsLanguage.INDONESIAN
+        }
     }
 
     suspend fun getLyrics(
@@ -47,6 +60,9 @@ class LyricsRepository(private val context: Context) {
         durationSeconds: Long = 0L,
         autoTranslate: Boolean = true
     ): LyricsData? = withContext(Dispatchers.IO) {
+        val targetLang = resolveTargetLang()
+        val cacheKey = "${trackId}_${targetLang.deeplCode}"
+
         synchronized(negativeCache) {
             val emptyAt = negativeCache.get(trackId)
             if (emptyAt != null && System.currentTimeMillis() - emptyAt < NEGATIVE_CACHE_TTL) {
@@ -55,19 +71,60 @@ class LyricsRepository(private val context: Context) {
         }
 
         synchronized(memCache) {
-            memCache.get(trackId)?.let { return@withContext it }
+            if (autoTranslate) {
+                memCache.get(cacheKey)?.let { return@withContext it }
+            } else {
+                memCache.get(trackId)?.let { return@withContext it }
+            }
         }
 
-        val diskFile = File(diskCacheDir, "$trackId.json")
-        if (diskFile.exists()) {
+        val langDiskFile = File(diskCacheDir, "${trackId}_${targetLang.deeplCode}.json")
+        val baseDiskFile = File(diskCacheDir, "$trackId.json")
+
+        if (autoTranslate && langDiskFile.exists()) {
             try {
-                val cached = parseLyricsJson(diskFile.readText())
-                if (cached != null) {
-                    synchronized(memCache) { memCache.put(trackId, cached) }
+                val cached = parseLyricsJson(langDiskFile.readText())
+                if (cached != null && cached.lines.any { !it.translation.isNullOrBlank() }) {
+                    synchronized(memCache) {
+                        memCache.put(cacheKey, cached)
+                    }
                     return@withContext cached
+                } else {
+                    langDiskFile.delete()
                 }
             } catch (e: Exception) {
                 Log.d("LyricsRepository", "Disk cache read error: ${e.message}")
+            }
+        }
+
+        if (baseDiskFile.exists()) {
+            try {
+                val cached = parseLyricsJson(baseDiskFile.readText())
+                if (cached != null) {
+                    if (!autoTranslate) {
+                        synchronized(memCache) { memCache.put(trackId, cached) }
+                        return@withContext cached
+                    }
+                    val translatedLines = translateLines(cached.lines, targetLang)
+                    val localized = cached.copy(lines = translatedLines)
+                    val hasTranslation = translatedLines.any { !it.translation.isNullOrBlank() }
+                    synchronized(memCache) {
+                        memCache.put(trackId, cached)
+                        if (hasTranslation) {
+                            memCache.put(cacheKey, localized)
+                        }
+                    }
+                    if (hasTranslation) {
+                        try {
+                            langDiskFile.writeText(serializeLyricsJson(localized))
+                        } catch (_: Exception) {}
+                    }
+                    return@withContext localized
+                } else {
+                    baseDiskFile.delete()
+                }
+            } catch (e: Exception) {
+                Log.d("LyricsRepository", "Base disk cache read error: ${e.message}")
             }
         }
 
@@ -84,25 +141,40 @@ class LyricsRepository(private val context: Context) {
         var lyrics: LyricsData? = null
 
         if (liriqoResult is LyricsFetchResult.Success) {
-            lyrics = liriqoResult.data
-        }
-
-        if (lyrics != null && autoTranslate && lyrics.lines.isNotEmpty()) {
-            val translatedLines = translateLinesToIndonesian(lyrics.lines)
-            lyrics = lyrics.copy(lines = translatedLines)
+            val sanitizedLines = LrcParser.sanitizeLines(liriqoResult.data.lines)
+            if (isValidLyricsLines(sanitizedLines)) {
+                lyrics = liriqoResult.data.copy(lines = sanitizedLines)
+            }
         }
 
         if (lyrics != null) {
-            synchronized(memCache) { memCache.put(trackId, lyrics) }
             try {
                 pruneDiskCacheIfNeeded()
-                diskFile.writeText(serializeLyricsJson(lyrics))
+                baseDiskFile.writeText(serializeLyricsJson(lyrics))
                 if (emptyMarker.exists()) emptyMarker.delete()
-            } catch (e: Exception) {
-                Log.d("LyricsRepository", "Disk cache save error: ${e.message}")
+            } catch (_: Exception) {}
+
+            val rawLyrics = lyrics
+            var translatedReady = false
+            if (autoTranslate && lyrics.lines.isNotEmpty()) {
+                val translatedLines = translateLines(lyrics.lines, targetLang)
+                lyrics = lyrics.copy(lines = translatedLines)
+                translatedReady = translatedLines.any { !it.translation.isNullOrBlank() }
+                if (translatedReady) {
+                    try {
+                        langDiskFile.writeText(serializeLyricsJson(lyrics))
+                    } catch (_: Exception) {}
+                }
+            }
+
+            synchronized(memCache) {
+                memCache.put(trackId, rawLyrics)
+                if (autoTranslate && translatedReady) {
+                    memCache.put(cacheKey, lyrics)
+                }
             }
         } else {
-            val liriqoVerifiedEmpty = liriqoResult is LyricsFetchResult.Empty
+            val liriqoVerifiedEmpty = liriqoResult is LyricsFetchResult.Empty || liriqoResult is LyricsFetchResult.Success
             val hadNetworkError = liriqoResult is LyricsFetchResult.Error
 
             if (!hadNetworkError && liriqoVerifiedEmpty) {
@@ -145,23 +217,27 @@ class LyricsRepository(private val context: Context) {
     ): LyricsFetchResult = withContext(Dispatchers.IO) {
         val durationMs = if (durationSeconds > 0) durationSeconds * 1000L else 0L
 
+        var sawError = false
         if (trackId.isNotBlank() && trackId.length in 10..12) {
             val url = "https://api.liriqo-alfarrizi.my.id/v1/lyrics?v=${URLEncoder.encode(trackId, "UTF-8")}"
             val res = queryLiriqoApi(url, trackId, title, artist, durationMs)
             if (res is LyricsFetchResult.Success) return@withContext res
+            if (res is LyricsFetchResult.Error) sawError = true
         }
 
         val directUrl = buildLiriqoSearchUrl(title, artist, durationSeconds)
         val directRes = queryLiriqoApi(directUrl, trackId, title, artist, durationMs)
         if (directRes is LyricsFetchResult.Success) return@withContext directRes
+        if (directRes is LyricsFetchResult.Error) sawError = true
 
         if (cleanTitle != title || cleanArtist != artist) {
             val cleanUrl = buildLiriqoSearchUrl(cleanTitle, cleanArtist, durationSeconds)
             val cleanRes = queryLiriqoApi(cleanUrl, trackId, title, artist, durationMs)
             if (cleanRes is LyricsFetchResult.Success) return@withContext cleanRes
+            if (cleanRes is LyricsFetchResult.Error) sawError = true
         }
 
-        if (directRes is LyricsFetchResult.Error) {
+        if (sawError) {
             LyricsFetchResult.Error
         } else {
             LyricsFetchResult.Empty
@@ -194,9 +270,9 @@ class LyricsRepository(private val context: Context) {
                 .get()
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            val code = response.code
-            val body = response.body?.string()
+            val (code, body) = httpClient.newCall(request).execute().use { resp ->
+                resp.code to resp.body?.string()
+            }
 
             if (code == 200 && !body.isNullOrBlank()) {
                 val lyricsData = com.ranzz.music.data.native.RanzzNativeCore.parseLiriqo(
@@ -206,7 +282,7 @@ class LyricsRepository(private val context: Context) {
                     title = title,
                     artist = artist
                 )
-                if (lyricsData != null && lyricsData.lines.isNotEmpty()) {
+                if (lyricsData != null && isValidLyricsLines(lyricsData.lines)) {
                     LyricsFetchResult.Success(lyricsData)
                 } else {
                     LyricsFetchResult.Empty
@@ -222,8 +298,9 @@ class LyricsRepository(private val context: Context) {
     }
 
     fun isValidLyricsLines(lines: List<LyricLine>): Boolean {
-        if (lines.isEmpty()) return false
-        val nonBlank = lines.filter { it.text.isNotBlank() }
+        val sanitized = LrcParser.sanitizeLines(lines)
+        if (sanitized.isEmpty()) return false
+        val nonBlank = sanitized.filter { it.text.isNotBlank() && !isIntroToken(it.text) }
         if (nonBlank.isEmpty()) return false
         if (nonBlank.size <= 2) {
             val combined = nonBlank.joinToString(" ") { it.text.lowercase().trim() }
@@ -234,15 +311,36 @@ class LyricsRepository(private val context: Context) {
         return true
     }
 
-    suspend fun translateLyrics(lyrics: LyricsData): LyricsData = withContext(Dispatchers.IO) {
+    suspend fun translateLyrics(
+        lyrics: LyricsData,
+        targetLang: LyricsLanguage = resolveTargetLang()
+    ): LyricsData = withContext(Dispatchers.IO) {
         if (lyrics.lines.isEmpty()) return@withContext lyrics
-        val translatedLines = translateLinesToIndonesian(lyrics.lines)
+        val cacheKey = "${lyrics.trackId}_${targetLang.deeplCode}"
+        val langDiskFile = File(diskCacheDir, "${lyrics.trackId}_${targetLang.deeplCode}.json")
+        if (langDiskFile.exists()) {
+            try {
+                val cached = parseLyricsJson(langDiskFile.readText())
+                if (cached != null && cached.lines.any { !it.translation.isNullOrBlank() }) {
+                    synchronized(memCache) {
+                        memCache.put(cacheKey, cached)
+                        memCache.put(lyrics.trackId, cached)
+                    }
+                    return@withContext cached
+                }
+            } catch (_: Exception) {}
+        }
+
+        val translatedLines = translateLines(lyrics.lines, targetLang)
         val result = lyrics.copy(lines = translatedLines)
-        synchronized(memCache) { memCache.put(lyrics.trackId, result) }
-        try {
-            val diskFile = File(diskCacheDir, "${lyrics.trackId}.json")
-            diskFile.writeText(serializeLyricsJson(result))
-        } catch (_: Exception) {}
+        if (translatedLines.any { !it.translation.isNullOrBlank() }) {
+            synchronized(memCache) {
+                memCache.put(cacheKey, result)
+            }
+            try {
+                langDiskFile.writeText(serializeLyricsJson(result))
+            } catch (_: Exception) {}
+        }
         result
     }
 
@@ -253,10 +351,15 @@ class LyricsRepository(private val context: Context) {
     private val DEEPL_USER_AGENT = "DeepL/26.41.0 (com.deepl.mobiletranslator; build:264100; Android 14)"
 
     private fun translateLinesToIndonesian(lines: List<LyricLine>): List<LyricLine> {
-        if (lines.isEmpty()) return lines
+        return translateLines(lines, resolveTargetLang())
+    }
 
-        val rawTexts = lines.map { it.text }
-        val payload = com.ranzz.music.data.native.RanzzNativeCore.buildDeepLRequestPayload(rawTexts, "id")
+    private fun translateLines(lines: List<LyricLine>, targetLang: LyricsLanguage): List<LyricLine> {
+        val cleanInput = LrcParser.sanitizeLines(lines)
+        if (cleanInput.isEmpty()) return emptyList()
+
+        val rawTexts = cleanInput.map { it.text }
+        val payload = com.ranzz.music.data.native.RanzzNativeCore.buildDeepLRequestPayload(rawTexts, targetLang.deeplCode)
 
         for (endpoint in DEEPL_ENDPOINTS) {
             try {
@@ -272,9 +375,9 @@ class LyricsRepository(private val context: Context) {
                         val respBody = resp.body?.string().orEmpty()
                         val translatedTexts = com.ranzz.music.data.native.RanzzNativeCore.parseDeepLResponseTranslations(respBody)
                         if (translatedTexts.isNotEmpty()) {
-                            return lines.mapIndexed { idx, line ->
+                            return cleanInput.mapIndexed { idx, line ->
                                 val trans = translatedTexts.getOrNull(idx)?.trim()
-                                val validTrans = if (!trans.isNullOrBlank() && !trans.equals(line.text.trim(), ignoreCase = true)) trans else null
+                                val validTrans = if (!trans.isNullOrBlank() && !trans.equals(line.text.trim(), ignoreCase = true) && !LrcParser.isJunkOrCreditLine(trans)) trans else null
                                 line.copy(translation = validTrans)
                             }
                         }
@@ -286,11 +389,11 @@ class LyricsRepository(private val context: Context) {
         }
 
         try {
-            val textToTranslate = lines.mapIndexed { idx, line ->
+            val textToTranslate = cleanInput.mapIndexed { idx, line ->
                 "[[[$idx]]] ${line.text}"
             }.joinToString("\n")
 
-            val formBody = ("client=gtx&sl=auto&tl=id&dt=t&q=" + encode(textToTranslate))
+            val formBody = ("client=gtx&sl=auto&tl=${targetLang.googleCode}&dt=t&q=" + encode(textToTranslate))
                 .toRequestBody("application/x-www-form-urlencoded".toMediaType())
 
             val req = Request.Builder()
@@ -307,8 +410,8 @@ class LyricsRepository(private val context: Context) {
                         val sb = StringBuilder()
                         for (i in 0 until segments.length()) {
                             val seg = segments.optJSONArray(i)
-                            if (seg != null) {
-                                sb.append(seg.optString(0))
+                            if (seg != null && !seg.isNull(0)) {
+                                sb.append(seg.optString(0, ""))
                             }
                         }
                         val fullTranslated = sb.toString()
@@ -325,9 +428,9 @@ class LyricsRepository(private val context: Context) {
                         }
 
                         if (translatedMap.isNotEmpty()) {
-                            return lines.mapIndexed { idx, line ->
+                            return cleanInput.mapIndexed { idx, line ->
                                 val trans = translatedMap[idx]
-                                val validTrans = if (!trans.isNullOrBlank() && !trans.equals(line.text.trim(), ignoreCase = true)) trans else null
+                                val validTrans = if (!trans.isNullOrBlank() && !trans.equals(line.text.trim(), ignoreCase = true) && !LrcParser.isJunkOrCreditLine(trans)) trans else null
                                 line.copy(translation = validTrans)
                             }
                         }
@@ -339,9 +442,9 @@ class LyricsRepository(private val context: Context) {
                             fullTranslated.lines().map { it.trim() }.filter { it.isNotEmpty() }
                         }
 
-                        return lines.mapIndexed { idx, line ->
+                        return cleanInput.mapIndexed { idx, line ->
                             val trans = translatedBlocks.getOrNull(idx)?.trim()
-                            val validTrans = if (!trans.isNullOrBlank() && !trans.equals(line.text.trim(), ignoreCase = true) && !trans.matches(Regex("""^\[\s*\[\s*\[.*\]\s*\]\s*\]$"""))) trans else null
+                            val validTrans = if (!trans.isNullOrBlank() && !trans.equals(line.text.trim(), ignoreCase = true) && !trans.matches(Regex("""^\[\s*\[\s*\[.*\]\s*\]\s*\]$""")) && !LrcParser.isJunkOrCreditLine(trans)) trans else null
                             line.copy(translation = validTrans)
                         }
                     }
@@ -350,7 +453,7 @@ class LyricsRepository(private val context: Context) {
         } catch (e: Exception) {
             Log.d("LyricsRepository", "Fallback translation error: ${e.message}")
         }
-        return lines
+        return cleanInput
     }
 
     private fun encode(str: String): String = URLEncoder.encode(str, "UTF-8")
@@ -384,19 +487,21 @@ class LyricsRepository(private val context: Context) {
             val artist = root.getString("artist")
             val isSynced = root.optBoolean("isSynced", true)
             val linesArr = root.getJSONArray("lines")
-            val lines = mutableListOf<LyricLine>()
+            val rawLines = mutableListOf<LyricLine>()
             for (i in 0 until linesArr.length()) {
                 val obj = linesArr.getJSONObject(i)
-                lines.add(
+                rawLines.add(
                     LyricLine(
                         timeMs = obj.getLong("timeMs"),
                         text = obj.getString("text"),
-                        translation = if (obj.has("translation")) obj.getString("translation") else null,
+                        translation = if (obj.has("translation") && !obj.isNull("translation")) obj.optString("translation").takeIf { it.isNotBlank() } else null,
                         endTimeMs = if (obj.has("endTimeMs") && !obj.isNull("endTimeMs")) obj.getLong("endTimeMs") else null
                     )
                 )
             }
-            LyricsData(trackId, title, artist, lines, isSynced)
+            val sanitizedLines = LrcParser.sanitizeLines(rawLines)
+            if (!isValidLyricsLines(sanitizedLines)) return null
+            LyricsData(trackId, title, artist, sanitizedLines, isSynced)
         } catch (e: Exception) {
             null
         }

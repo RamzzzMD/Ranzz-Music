@@ -1,6 +1,7 @@
 package com.ranzz.music.data.native
 
 import android.util.Log
+import com.ranzz.music.data.lyrics.LrcParser
 import com.ranzz.music.data.model.Track
 import org.json.JSONArray
 import org.json.JSONObject
@@ -8,6 +9,10 @@ import org.json.JSONObject
 object RanzzNativeCore {
 
     private const val TAG = "RanzzNativeCore"
+    private const val UNIT_SEP = '\u001F'
+    private val CLEAN_NOISE_REGEX = Regex("""(?i)\s*[\(\[](?:official\s*(?:music\s*)?video|official\s*audio|official\s*lyric\s*video|official\s*mv|music\s*video|lyric\s*video|lyrics|audio|visualizer|remastered|remaster|4k|hd|hq|mv|clip\s*officiel|video\s*oficial)[\)\]]""")
+    private val CLEAN_PIPE_REGEX = Regex("""(?i)\s*\|\s*(?:official\s*(?:music\s*)?video|official\s*audio|official\s*lyric|visualizer).*""")
+    private val LRC_TAG_REGEX = Regex("""\[(\d{1,2}):(\d{2}(?:\.\d{1,3})?)\]""")
 
     val isLoaded: Boolean = try {
         System.loadLibrary("ranzz_core")
@@ -15,7 +20,7 @@ object RanzzNativeCore {
     } catch (e: UnsatisfiedLinkError) {
         Log.w(TAG, "Native ranzz_core library not available, using Kotlin fallback: ${e.message}")
         false
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
         Log.w(TAG, "Failed to load ranzz_core library: ${e.message}")
         false
     }
@@ -23,9 +28,12 @@ object RanzzNativeCore {
     private external fun cleanTrackTitle(rawTitle: String): String
     private external fun rankCandidates(candidatesJson: String, profileJson: String): String
     private external fun parseAutomixTracks(rawJson: String, currentVideoId: String): String
+    private external fun parseAutomixTracksPacked(rawJson: String, currentVideoId: String): String
+    private external fun parseYtmSearchPacked(rawJson: String): String
     private external fun buildDeepLPayload(linesJson: String, targetLang: String): String
     private external fun parseDeepLTranslations(responseJson: String): String
     private external fun parseLiriqoLyrics(rawJson: String, durationMs: Long): String
+    private external fun parseLiriqoLyricsPacked(rawJson: String, durationMs: Long): String
 
     fun sanitizeTitle(rawTitle: String): String {
         if (!isLoaded) return fallbackCleanTitle(rawTitle)
@@ -36,59 +44,82 @@ object RanzzNativeCore {
         }
     }
 
+    fun normalizeSongTitleKey(rawTitle: String): String {
+        val cleaned = sanitizeTitle(rawTitle).lowercase()
+        val sb = StringBuilder(cleaned.length)
+        for (ch in cleaned) {
+            if (ch.isLetterOrDigit()) {
+                sb.append(ch)
+            }
+        }
+        return sb.toString()
+    }
+
+    fun isDuplicateOrVariantTrack(a: Track, b: Track): Boolean {
+        if (a.id == b.id) return true
+        val titleA = normalizeSongTitleKey(a.title)
+        val titleB = normalizeSongTitleKey(b.title)
+        if (titleA.isEmpty() || titleB.isEmpty()) return false
+        if (titleA == titleB) return true
+        val artistA = normalizeSongTitleKey(a.artist)
+        val artistB = normalizeSongTitleKey(b.artist)
+        if (artistA.isEmpty() || artistA != artistB) return false
+        val shorter = if (titleA.length <= titleB.length) titleA else titleB
+        val longer = if (titleA.length <= titleB.length) titleB else titleA
+        return longer.startsWith(shorter) && longer.length - shorter.length <= 12
+    }
+
+    /**
+     * Preserves 100% of YouTube Music's native Automix Radio sequence while
+     * deduplicating identical song titles (different uploaders/covers/MVs)
+     * and moving tracks with repeated user skips to the tail.
+     */
     fun rankRadioTracks(
         candidates: List<Track>,
         scores: Map<String, Int>,
         topArtists: List<String>
     ): List<Track> {
-        if (candidates.isEmpty()) return candidates
-        if (!isLoaded) return fallbackRankRadio(candidates, scores, topArtists)
-
-        return try {
-            val candArr = JSONArray()
-            for (t in candidates) {
-                candArr.put(JSONObject().apply {
-                    put("id", t.id)
-                    put("title", t.title)
-                    put("artist", t.artist)
-                    put("url", t.url)
-                    put("thumbnailUrl", t.thumbnailUrl)
-                    put("durationSeconds", t.durationSeconds)
-                })
+        if (candidates.size <= 1) return candidates
+        val deduplicated = ArrayList<Track>(candidates.size)
+        for (track in candidates) {
+            if (deduplicated.none { isDuplicateOrVariantTrack(track, it) }) {
+                deduplicated.add(track)
             }
-
-            val profObj = JSONObject().apply {
-                val scoresObj = JSONObject()
-                scores.forEach { (k, v) -> scoresObj.put(k, v) }
-                put("scores", scoresObj)
-
-                val artArr = JSONArray()
-                topArtists.forEach { artArr.put(it) }
-                put("top_artists", artArr)
-            }
-
-            val outJson = rankCandidates(candArr.toString(), profObj.toString())
-            val resArr = JSONArray(outJson)
-            val ranked = mutableListOf<Track>()
-            val candMap = candidates.associateBy { it.id }
-
-            for (i in 0 until resArr.length()) {
-                val obj = resArr.getJSONObject(i)
-                val id = obj.optString("id")
-                val orig = candMap[id]
-                if (orig != null) {
-                    ranked.add(orig)
-                }
-            }
-            if (ranked.isNotEmpty()) ranked else candidates
-        } catch (e: Throwable) {
-            Log.e(TAG, "Native rank failed, using fallback: ${e.message}")
-            fallbackRankRadio(candidates, scores, topArtists)
         }
+        return deduplicated
+    }
+
+    private fun unpackTracks(packed: String): List<Track>? {
+        if (packed.isBlank()) return null
+        val list = ArrayList<Track>(24)
+        for (line in packed.lineSequence()) {
+            if (line.isBlank()) continue
+            val parts = line.split(UNIT_SEP)
+            if (parts.size < 6) continue
+            val vid = parts[0]
+            if (vid.isBlank()) continue
+            list.add(
+                Track(
+                    id = vid,
+                    title = parts[1],
+                    artist = parts[2].ifBlank { "Unknown Artist" },
+                    url = parts[3].ifBlank { "https://www.youtube.com/watch?v=$vid" },
+                    thumbnailUrl = parts[4],
+                    durationSeconds = parts[5].toLongOrNull() ?: 0L
+                )
+            )
+        }
+        return if (list.isNotEmpty()) list else null
     }
 
     fun parseAutomix(rawJson: String, currentVideoId: String): List<Track>? {
-        if (!isLoaded) return null
+        if (!isLoaded || rawJson.isBlank()) return null
+        try {
+            val packed = parseAutomixTracksPacked(rawJson, currentVideoId)
+            val fastList = unpackTracks(packed)
+            if (fastList != null) return fastList
+        } catch (_: Throwable) {}
+
         return try {
             val out = parseAutomixTracks(rawJson, currentVideoId)
             val arr = JSONArray(out)
@@ -113,6 +144,17 @@ object RanzzNativeCore {
             if (list.isNotEmpty()) list else null
         } catch (e: Throwable) {
             Log.e(TAG, "Native parseAutomix failed: ${e.message}")
+            null
+        }
+    }
+
+    fun parseYtmSearch(rawJson: String): List<Track>? {
+        if (!isLoaded || rawJson.isBlank()) return null
+        return try {
+            val packed = parseYtmSearchPacked(rawJson)
+            unpackTracks(packed)
+        } catch (e: Throwable) {
+            Log.d(TAG, "Native parseYtmSearch fallback: ${e.message}")
             null
         }
     }
@@ -173,23 +215,13 @@ object RanzzNativeCore {
 
     private fun fallbackCleanTitle(raw: String): String {
         return raw
-            .replace(Regex("""(?i)\s*[\(\[](?:official\s*(?:music\s*)?video|official\s*audio|music\s*video|lyric\s*video|lyrics|audio|visualizer|remastered|remaster|4k|hd|hq|mv|clip\s*officiel|video\s*oficial)[\)\]]"""), "")
-            .replace(Regex("""(?i)\s*\|\s*(?:official\s*(?:music\s*)?video|official\s*audio|visualizer).*"""), "")
+            .replace(CLEAN_NOISE_REGEX, "")
+            .replace(CLEAN_PIPE_REGEX, "")
             .trim()
     }
 
-    private fun fallbackRankRadio(
-        candidates: List<Track>,
-        scores: Map<String, Int>,
-        topArtists: List<String>
-    ): List<Track> {
-        val topSet = topArtists.map { it.lowercase() }.toSet()
-        return candidates.sortedByDescending { track ->
-            var s = scores[track.id] ?: 0
-            if (s < 0) s = 0
-            if (track.artist.lowercase() in topSet) s += 5
-            s
-        }
+    private fun isJunkLyricLine(text: String): Boolean {
+        return LrcParser.isJunkOrCreditLine(text)
     }
 
     fun parseLiriqo(
@@ -200,6 +232,42 @@ object RanzzNativeCore {
         artist: String
     ): com.ranzz.music.data.lyrics.LyricsData? {
         if (rawJson.isBlank()) return null
+
+        if (isLoaded) {
+            try {
+                val packed = parseLiriqoLyricsPacked(rawJson, durationMs)
+                if (packed.isNotBlank()) {
+                    val seq = packed.lineSequence().iterator()
+                    if (seq.hasNext()) {
+                        val header = seq.next().split(UNIT_SEP)
+                        val isSynced = header.firstOrNull() != "0"
+                        val lines = ArrayList<com.ranzz.music.data.lyrics.LyricLine>(64)
+                        while (seq.hasNext()) {
+                            val row = seq.next()
+                            if (row.isBlank()) continue
+                            val cols = row.split(UNIT_SEP)
+                            if (cols.size < 3) continue
+                            val timeMs = cols[0].toLongOrNull() ?: 0L
+                            val endMs = cols[1].takeIf { it.isNotEmpty() }?.toLongOrNull()
+                            val text = cols[2].trim()
+                            if (text.isNotEmpty()) {
+                                lines.add(com.ranzz.music.data.lyrics.LyricLine(timeMs, text, endTimeMs = endMs))
+                            }
+                        }
+                        if (lines.isNotEmpty()) {
+                            return com.ranzz.music.data.lyrics.LyricsData(
+                                trackId = trackId,
+                                title = title,
+                                artist = artist,
+                                lines = lines,
+                                isSynced = isSynced
+                            )
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
         val jsonResult = if (isLoaded) {
             try {
                 parseLiriqoLyrics(rawJson, durationMs)
@@ -215,14 +283,15 @@ object RanzzNativeCore {
             val root = JSONObject(jsonResult)
             val isSynced = root.optBoolean("is_synced", true)
             val linesArr = root.optJSONArray("lines") ?: return null
-            val lines = mutableListOf<com.ranzz.music.data.lyrics.LyricLine>()
+            val rawLines = mutableListOf<com.ranzz.music.data.lyrics.LyricLine>()
             for (i in 0 until linesArr.length()) {
                 val obj = linesArr.getJSONObject(i)
                 val timeMs = obj.getLong("time_ms")
                 val text = obj.getString("text")
                 val endMs = if (obj.has("end_time_ms") && !obj.isNull("end_time_ms")) obj.getLong("end_time_ms") else null
-                lines.add(com.ranzz.music.data.lyrics.LyricLine(timeMs, text, endTimeMs = endMs))
+                rawLines.add(com.ranzz.music.data.lyrics.LyricLine(timeMs, text, endTimeMs = endMs))
             }
+            val lines = LrcParser.sanitizeLines(rawLines)
             if (lines.isEmpty()) return null
             com.ranzz.music.data.lyrics.LyricsData(
                 trackId = trackId,
@@ -253,96 +322,119 @@ object RanzzNativeCore {
                 "ytm_line"
             )
 
-            var bestTrack: JSONObject? = null
+            var bestProvider = "liriqo"
+            var bestSynced = true
             var bestScore = -1
+            var bestItems: List<JSONObject> = emptyList()
 
             for (i in 0 until tracks.length()) {
                 val t = tracks.optJSONObject(i) ?: continue
-                val provider = t.optString("provider", "")
+                val provider = t.optString("provider", "liriqo")
                 val pRank = ranks.indexOf(provider).let { if (it >= 0) it else 99 }
                 val syncLevel = t.optString("syncLevel", "")
                 val isWordOrSyllable = syncLevel == "syllable" || syncLevel == "word"
+
                 val timed = t.optJSONArray("timed")
-
                 if (timed != null && timed.length() > 0) {
-                    val score = if (isWordOrSyllable) 1000 - pRank else 500 - pRank
-                    if (score > bestScore) {
-                        bestScore = score
-                        bestTrack = t
+                    val items = mutableListOf<JSONObject>()
+                    for (j in 0 until timed.length()) {
+                        val line = timed.optJSONObject(j) ?: continue
+                        if (line.optBoolean("isInstrumental", false) || line.optBoolean("isCue", false)) continue
+                        val rawText = line.optString("text", "").trim()
+                        val cleanText = LrcParser.sanitizeLyricText(rawText) ?: continue
+                        val start = line.optLong("start", -1L)
+                        val end = line.optLong("end", -1L)
+                        if (start < 0 || end <= start) continue
+                        if (durationMs > 0 && start > durationMs + 10000) continue
+                        val item = JSONObject()
+                        item.put("time_ms", start)
+                        item.put("text", cleanText)
+                        item.put("end_time_ms", end)
+                        items.add(item)
+                    }
+                    if (items.isNotEmpty()) {
+                        items.sortBy { it.optLong("time_ms", 0L) }
+                        val score = if (isWordOrSyllable) 1000 - pRank else 500 - pRank
+                        if (score > bestScore) {
+                            bestScore = score
+                            bestProvider = provider
+                            bestSynced = true
+                            bestItems = items
+                        }
+                        continue
                     }
                 }
-            }
 
-            if (bestTrack == null) {
-                for (i in 0 until tracks.length()) {
-                    val t = tracks.optJSONObject(i) ?: continue
-                    val lrc = t.optString("lrc", "")
-                    if (lrc.isNotBlank()) {
-                        bestTrack = t
-                        break
-                    }
-                }
-            }
-
-            val chosen = bestTrack ?: return ""
-            val timed = chosen.optJSONArray("timed")
-            val resultObj = JSONObject()
-            resultObj.put("provider", chosen.optString("provider", "liriqo"))
-            resultObj.put("is_synced", true)
-
-            val linesArr = JSONArray()
-            if (timed != null && timed.length() > 0) {
-                for (i in 0 until timed.length()) {
-                    val line = timed.optJSONObject(i) ?: continue
-                    val text = line.optString("text", "").trim()
-                    val start = line.optLong("start", -1L)
-                    val end = line.optLong("end", -1L)
-                    if (text.isEmpty() || start < 0 || end <= start) continue
-                    if (durationMs > 0 && start > durationMs + 10000) continue
-
-                    val item = JSONObject()
-                    item.put("time_ms", start)
-                    item.put("text", text)
-                    item.put("end_time_ms", end)
-                    linesArr.put(item)
-                }
-            } else {
-                val lrc = chosen.optString("lrc", "")
+                val lrc = t.optString("lrc", "")
                 if (lrc.isNotBlank()) {
-                    val tagRegex = Regex("""\[(\d{1,2}):(\d{2}(?:\.\d{1,3})?)\]""")
+                    val items = mutableListOf<JSONObject>()
                     for (rawLine in lrc.lines()) {
                         val trimmed = rawLine.trim()
-                        val match = tagRegex.find(trimmed) ?: continue
+                        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+                            val unwrapped = LrcParser.unwrapNetEaseJsonText(trimmed)
+                            val jsonTime = unwrapped?.first
+                            val cleanText = unwrapped?.second?.let { LrcParser.sanitizeLyricText(it) }
+                            if (jsonTime != null && !cleanText.isNullOrBlank() && (durationMs <= 0 || jsonTime <= durationMs + 10000)) {
+                                val item = JSONObject()
+                                item.put("time_ms", jsonTime)
+                                item.put("text", cleanText)
+                                items.add(item)
+                            }
+                            continue
+                        }
+                        val match = LRC_TAG_REGEX.find(trimmed) ?: continue
                         val min = match.groupValues[1].toLongOrNull() ?: continue
                         val secFloat = match.groupValues[2].toDoubleOrNull() ?: continue
                         val timeMs = (min * 60_000L + (secFloat * 1000L).toLong())
-                        val text = trimmed.substring(match.range.last + 1).trim()
-                        if (text.isEmpty()) continue
+                        val rawText = trimmed.substring(match.range.last + 1).trim()
+                        val cleanText = LrcParser.sanitizeLyricText(rawText) ?: continue
                         if (durationMs > 0 && timeMs > durationMs + 10000) continue
                         val item = JSONObject()
                         item.put("time_ms", timeMs)
-                        item.put("text", text)
-                        linesArr.put(item)
+                        item.put("text", cleanText)
+                        items.add(item)
+                    }
+                    if (items.isNotEmpty()) {
+                        items.sortBy { it.optLong("time_ms", 0L) }
+                        val score = 300 - pRank
+                        if (score > bestScore) {
+                            bestScore = score
+                            bestProvider = provider
+                            bestSynced = true
+                            bestItems = items
+                        }
+                        continue
                     }
                 }
-            }
 
-            if (linesArr.length() == 0) {
-                val plain = chosen.optString("plain", "")
+                val plain = t.optString("plain", "")
                 if (plain.isNotBlank()) {
-                    resultObj.put("is_synced", false)
+                    val items = mutableListOf<JSONObject>()
                     for (line in plain.lines()) {
-                        val text = line.trim()
-                        if (text.isEmpty()) continue
+                        val cleanText = LrcParser.sanitizeLyricText(line) ?: continue
                         val item = JSONObject()
                         item.put("time_ms", 0L)
-                        item.put("text", text)
-                        linesArr.put(item)
+                        item.put("text", cleanText)
+                        items.add(item)
+                    }
+                    if (items.isNotEmpty()) {
+                        val score = 100 - pRank
+                        if (score > bestScore) {
+                            bestScore = score
+                            bestProvider = provider
+                            bestSynced = false
+                            bestItems = items
+                        }
                     }
                 }
             }
 
-            if (linesArr.length() == 0) return ""
+            if (bestItems.isEmpty()) return ""
+            val resultObj = JSONObject()
+            resultObj.put("provider", bestProvider)
+            resultObj.put("is_synced", bestSynced)
+            val linesArr = JSONArray()
+            bestItems.forEach { linesArr.put(it) }
             resultObj.put("lines", linesArr)
             resultObj.toString()
         } catch (_: Exception) {

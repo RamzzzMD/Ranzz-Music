@@ -1,9 +1,18 @@
 package com.ranzz.music.ui.components
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,45 +26,46 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
-import com.ranzz.music.data.model.Track
-import com.ranzz.music.ui.theme.RanzzAppTheme
-import com.ranzz.music.ui.theme.Typography
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.ranzz.music.data.model.Track
+import com.ranzz.music.ui.theme.RanzzAppTheme
+import com.ranzz.music.ui.theme.RanzzMotion
+import com.ranzz.music.ui.theme.Typography
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
-import kotlin.math.PI
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TrackItem(
     track: Track,
@@ -64,22 +74,37 @@ fun TrackItem(
     onClick: () -> Unit,
     onFavoriteClick: () -> Unit,
     onMoreClick: (() -> Unit)? = null,
+    onSwipeAddToQueue: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = RanzzAppTheme.colors
+    val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
-    val downloadManager = remember(context) { com.ranzz.music.data.download.OfflineDownloadManager.getInstance(context) }
-    val downloadStatuses by downloadManager.downloadStatuses.collectAsState()
-    val downloadProgress by downloadManager.downloadProgress.collectAsState()
-    val dlStatus = downloadStatuses[track.id] ?: com.ranzz.music.data.download.DownloadStatus.NONE
-    val dlProgress = downloadProgress[track.id] ?: 0
+    val imageModel = remember(track.id, track.thumbnailUrl) {
+        ImageRequest.Builder(context)
+            .data(track.thumbnailUrlForDisplay(160))
+            .crossfade(false)
+            .build()
+    }
 
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(if (isPlaying) colors.card else Color.Transparent)
-            .clickable { onClick() }
+            .combinedClickable(
+                onClick = { onClick() },
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (onMoreClick != null) {
+                        onMoreClick()
+                    } else if (onSwipeAddToQueue != null) {
+                        onSwipeAddToQueue()
+                    } else {
+                        onFavoriteClick()
+                    }
+                }
+            )
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -88,11 +113,12 @@ fun TrackItem(
             contentAlignment = Alignment.Center
         ) {
             AsyncImage(
-                model = track.thumbnailUrlForDisplay(160),
+                model = imageModel,
                 contentDescription = track.title,
                 modifier = Modifier
                     .size(50.dp)
-                    .clip(RoundedCornerShape(8.dp)),
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(colors.card),
                 contentScale = ContentScale.Crop
             )
 
@@ -154,50 +180,6 @@ fun TrackItem(
             modifier = Modifier.padding(end = 4.dp)
         )
 
-        val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
-
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .clickable(
-                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                    indication = androidx.compose.material.ripple.rememberRipple(bounded = false, radius = 18.dp),
-                    onClick = {
-                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                        downloadManager.toggleDownload(track)
-                    }
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            when (dlStatus) {
-                com.ranzz.music.data.download.DownloadStatus.DOWNLOADING -> {
-                    CircularProgressIndicator(
-                        progress = if (dlProgress > 0) dlProgress / 100f else 0.1f,
-                        color = colors.accent,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                com.ranzz.music.data.download.DownloadStatus.DOWNLOADED -> {
-                    Icon(
-                        imageVector = Icons.Default.DownloadDone,
-                        contentDescription = "Downloaded Offline",
-                        tint = Color(0xFF34C759),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                else -> {
-                    Icon(
-                        imageVector = Icons.Outlined.Download,
-                        contentDescription = "Download Offline",
-                        tint = colors.textMuted,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-        }
-
         Box(
             modifier = Modifier
                 .size(40.dp)
@@ -206,28 +188,32 @@ fun TrackItem(
                     interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                     indication = androidx.compose.material.ripple.rememberRipple(bounded = false, radius = 20.dp),
                     onClick = {
-                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onFavoriteClick()
                     }
                 ),
             contentAlignment = Alignment.Center
         ) {
-            val favScale by androidx.compose.animation.core.animateFloatAsState(
-                targetValue = if (track.isFavorite) 1.15f else 1f,
-                animationSpec = tween(durationMillis = 150),
-                label = "fav_scale"
+            val favTint by animateColorAsState(
+                targetValue = if (track.isFavorite) Color(0xFFFF3B30) else colors.textMuted,
+                animationSpec = tween(durationMillis = 160),
+                label = "track_fav_tint"
             )
-            Icon(
-                imageVector = if (track.isFavorite) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
-                contentDescription = "Favorite",
-                tint = if (track.isFavorite) androidx.compose.ui.graphics.Color(0xFFFF3B30) else colors.textMuted,
-                modifier = Modifier
-                    .size(22.dp)
-                    .graphicsLayer {
-                        scaleX = favScale
-                        scaleY = favScale
-                    }
-            )
+            AnimatedContent(
+                targetState = track.isFavorite,
+                transitionSpec = {
+                    (scaleIn(initialScale = 0.6f, animationSpec = RanzzMotion.appleSnappySpring()) + fadeIn(tween(140)))
+                        .togetherWith(scaleOut(targetScale = 0.6f, animationSpec = tween(110)) + fadeOut(tween(110)))
+                },
+                label = "track_fav_icon"
+            ) { isFav ->
+                Icon(
+                    imageVector = if (isFav) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
+                    contentDescription = "Favorite",
+                    tint = favTint,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
         }
 
         if (onMoreClick != null) {

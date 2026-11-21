@@ -31,7 +31,7 @@ jobs:
           java-version: '17'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
@@ -39,7 +39,7 @@ jobs:
       - name: Set up Rust Toolchain and Targets
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
@@ -48,42 +48,56 @@ jobs:
         run: |
           mkdir -p app/src/main/jniLibs/arm64-v8a
           mkdir -p app/src/main/jniLibs/armeabi-v7a
-          mkdir -p app/src/main/jniLibs/x86_64
-          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o app/src/main/jniLibs build --release --manifest-path ranzz-core/Cargo.toml
+          cargo ndk -t arm64-v8a -t armeabi-v7a -o app/src/main/jniLibs build --release --manifest-path ranzz-core/Cargo.toml
 
-      - name: Generate Ranzz Keystore
+      - name: Prepare Ranzz Keystore
         run: |
-          rm -f app/ranzz.keystore
-          keytool -genkey -v -keystore app/ranzz.keystore -alias ranzz -keyalg RSA -keysize 2048 -validity 10000 -storepass ranzzandroidapp -keypass ranzzandroidapp -dname "CN=RanzzMusic, OU=Ranzz, O=Ranzz, L=Jakarta, C=ID"
+          if [ ! -f app/ranzz.keystore ]; then
+            keytool -genkey -v -keystore app/ranzz.keystore -alias ranzz -keyalg RSA -keysize 2048 -validity 10000 -storepass ranzzandroidapp -keypass ranzzandroidapp -dname "CN=RanzzMusic, OU=Ranzz, O=Ranzz, L=Jakarta, C=ID"
+          fi
 
       - name: Build Release & Debug APKs
         run: ./gradlew assembleRelease assembleDebug --stacktrace
-
-      - name: Upload Release APK (Optimized R8)
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ranzz-Music-Release-APK
-          path: app/build/outputs/apk/release/*.apk
-          retention-days: 14
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ranzz-Music-Debug-APK
-          path: app/build/outputs/apk/debug/*.apk
-          retention-days: 14
 
       - name: Prepare Release APKs
         id: prep_release
         run: |
           mkdir -p release-apks
           VERSION_NAME=$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -n 1)
-          TAG_NAME="v${VERSION_NAME:-3.8.4}"
-          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
-          cp app/build/outputs/apk/release/*.apk release-apks/Ranzz-Music-${TAG_NAME}-release.apk
-          cp app/build/outputs/apk/release/*.apk release-apks/Ranzz-Music-${TAG_NAME}.apk
-          cp app/build/outputs/apk/release/*.apk release-apks/Ranzz-Music-Release.apk
-          cp app/build/outputs/apk/debug/*.apk release-apks/Ranzz-Music-${TAG_NAME}-debug.apk
+          test -n "$VERSION_NAME" || { echo "Could not read app versionName"; exit 1; }
+          TAG_NAME="v${VERSION_NAME}"
+          RELEASE_DIR="app/build/outputs/apk/release"
+          DEBUG_DIR="app/build/outputs/apk/debug"
+
+          if [ -f "${RELEASE_DIR}/app-universal-release.apk" ]; then
+            cp "${RELEASE_DIR}/app-universal-release.apk" "release-apks/Ranzz-Music-${TAG_NAME}-release.apk"
+          else
+            cp "${RELEASE_DIR}/app-release.apk" "release-apks/Ranzz-Music-${TAG_NAME}-release.apk"
+          fi
+          cp "release-apks/Ranzz-Music-${TAG_NAME}-release.apk" "release-apks/Ranzz-Music-Release.apk"
+
+          if [ -f "${RELEASE_DIR}/app-arm64-v8a-release.apk" ]; then
+            cp "${RELEASE_DIR}/app-arm64-v8a-release.apk" "release-apks/Ranzz-Music-${TAG_NAME}-arm64-v8a.apk"
+          fi
+          if [ -f "${RELEASE_DIR}/app-armeabi-v7a-release.apk" ]; then
+            cp "${RELEASE_DIR}/app-armeabi-v7a-release.apk" "release-apks/Ranzz-Music-${TAG_NAME}-armeabi-v7a.apk"
+          fi
+
+          if [ -f "${DEBUG_DIR}/app-universal-debug.apk" ]; then
+            cp "${DEBUG_DIR}/app-universal-debug.apk" "release-apks/Ranzz-Music-${TAG_NAME}-debug.apk"
+          elif [ -f "${DEBUG_DIR}/app-debug.apk" ]; then
+            cp "${DEBUG_DIR}/app-debug.apk" "release-apks/Ranzz-Music-${TAG_NAME}-debug.apk"
+          fi
+
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Ranzz Music APKs Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ranzz-Music-${{ steps.prep_release.outputs.tag_name }}-APKs
+          path: release-apks/*.apk
+          retention-days: 30
 
       - name: Publish to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
@@ -94,49 +108,20 @@ jobs:
           files: release-apks/*.apk
           generate_release_notes: true
           body: |
-            ## 🚀 Ranzz Music ${{ steps.prep_release.outputs.tag_name }} — Pembaruan Besar (Major Update)
-
-            Pembaruan **${{ steps.prep_release.outputs.tag_name }}** menghadirkan mesin native **Rust (`ranzz-core`)**, sistem lirik multi-sumber **LiriQo**, **Widget Beranda Android**, **Dynamic Album Palette**, serta berbagai fitur pemutar baru dengan tetap mempertahankan desain monokrom OLED yang ringan dan bebas iklan.
-
-            ---
+            ## 🚀 Ranzz Music ${{ steps.prep_release.outputs.tag_name }} — Offline Playback, Vibe Discovery, Comments & Performance
 
             ### ✨ Apa yang Baru di ${{ steps.prep_release.outputs.tag_name }}?
 
-            #### 📥 1. Download Lagu & Mode Offline Tanpa Internet (`OfflineDownloadManager`)
-            - **Unduh Lagu 1-Ketukan**: Tombol download langsung pada setiap daftar lagu, layar pemutar penuh, dan menu opsi lagu.
-            - **100% Putar Offline (Audio + Cover + Lirik)**: Menyimpan file audio kualitas tinggi (`.m4a`/`.webm`), sampul album HD, serta lirik tersinkronisasi ke penyimpanan internal agar bisa diputar tanpa kuota/internet sama sekali.
-            - **Tab "Offline" di Library**: Kelola semua lagu yang telah diunduh lengkap dengan informasi ukuran penyimpanan serta tombol **Putar Offline** & **Acak Offline**.
-
-            #### 🦀 2. Ranzz Native Core (Rust JNI Engine)
-            - **Mesin Native Rust (`ranzz-core`)**: Pemrosesan jaringan, ekstraksi lirik, sanitasi metadata, dan sistem rekomendasi kini dijalankan secara native di Rust untuk performa instan dan penggunaan RAM super rendah.
-            - **InnerTube Native Client**: Klien YouTube Music InnerTube (`WEB_REMIX`) langsung di tingkat native untuk pencarian lagu, rekomendasi beranda, radio automix, dan sinkronisasi *Liked Songs*.
-            - **Smart Metadata Sanitizer**: Pembersih judul lagu dan nama artis otomatis dari tag berlebih seperti `(Official Music Video)`, `[Lyrics]`, `VEVO`, `HD`, dll.
-
-            #### 🎤 3. LiriQo Multi-Source Lyrics & Full-Screen Karaoke
-            - **4 Sumber Lirik Paralel (LiriQo Engine)**: Mencari lirik tersinkronisasi secara paralel dari **LRCLIB**, **NetEase Cloud Music**, **Musixmatch**, dan **KuGou** dengan algoritma pencocokan durasi & judul presisi.
-            - **Word-by-Word / Syllable Karaoke Sync**: Dukungan lirik karaoke per suku kata (*enhanced LRC & KuGou KRC*) dengan animasi sorotan progresif yang halus.
-            - **Full-Screen Lyrics View**: Mode lirik layar penuh imersif dengan latar belakang gradasi warna sampul album (*Dynamic Palette*) dan **Instrumental Break Indicator (`•••`)** saat jeda instrumen.
-            - **Terjemahan Lirik Dwibahasa Cepat**: Penerjemah baris lirik paralel langsung dari mesin native Rust.
-
-            #### 📱 4. Android Homescreen Widgets
-            - **Ranzz Compact Widget (4×1)**: Widget bar horizontal minimalis di layar utama HP dengan sampul album, judul lagu, artis, dan tombol Play/Pause & Next.
-            - **Ranzz Square Widget (2×2)**: Widget persegi estetik dengan sampul album resolusi tinggi dan kontrol Previous, Play/Pause, serta Next yang tersinkronisasi secara *real-time*.
-
-            #### 🎛️ 5. Peningkatan Pemutar Musik & Manajemen Antrean
-            - **Dynamic Cover Palette**: Ekstraksi warna dominan dari sampul album secara otomatis menggunakan AndroidX Palette untuk latar belakang pemutar penuh & lirik.
-            - **Interactive Queue Sheet (Drag & Drop)**: Atur ulang urutan antrean lagu dengan *drag-and-drop*, lompat ke lagu mana saja, atau bersihkan antrean dengan satu ketukan.
-            - **Track Options Bottom Sheet**: Menu aksi cepat untuk *Play Next*, *Add to Queue*, *Add to Playlist*, dan *Share Track*.
-            - **Sleep Timer & Playback Speed**: Pengatur waktu tidur otomatis (`15m`, `30m`, `45m`, `60m`) dan pengaturan kecepatan putar (`0.5x` – `2.0x`).
-            - **Repeat Mode Lengkap & Swipe Artwork**: Dukungan *Repeat Off*, *Repeat All*, *Repeat One*, serta gestur *swipe* kiri/kanan pada sampul album untuk mengganti lagu.
-
-            #### 🔄 6. In-App Auto Updater & Dukungan Dwibahasa (ID / EN)
-            - **Pembaruan Langsung di Aplikasi (`UpdateManager`)**: Deteksi otomatis rilis terbaru dari GitHub Releases lengkap dengan dialog *What's New* dan pengunduh/pemasang APK terintegrasi.
-            - **Bilingual UI (Bahasa Indonesia & English)**: Pilihan bahasa antarmuka (*Sistem*, *Bahasa Indonesia*, *English*) langsung dari menu Pengaturan, disertai pembaruan profil kustom (*Edit Profile*) dan ikonografi baru.
-
-            ---
-
-            ### 📦 Berkas Unduhan (Assets)
-            | Berkas | Ukuran | Keterangan |
-            | :--- | :---: | :--- |
-            | **`Ranzz-Music-${{ steps.prep_release.outputs.tag_name }}-release.apk`** / **`Ranzz-Music-${{ steps.prep_release.outputs.tag_name }}.apk`** | **12.6 MB** | **Direkomendasikan.** APK rilis resmi (R8 FullMode + Native Rust `arm64-v8a`, `armeabi-v7a`, `x86_64`). |
-            | **`Ranzz-Music-${{ steps.prep_release.outputs.tag_name }}-debug.apk`** | **31.02 MB** | APK versi debug untuk pengujian & pengembangan. |
+            - **📥 Offline Audio & Thumbnails (`OfflineMusicManager`)**:
+              - ExoPlayer cache data source kini dibungkus dengan `DefaultDataSource.Factory` sehingga file audio lokal (`file://` dan `content://`) dapat diputar tanpa internet dengan stabil.
+              - Thumbnail album offline turut diunduh dan disimpan secara lokal serta mempertahankan MIME type & sesi pemutaran offline.
+            - **✨ Tab Vibe, Playlist Detail & Komentar Lagu**:
+              - Tab **Vibe** baru untuk eksplorasi musik berdasarkan suasana hati & genre.
+              - **Playlist Detail Sheet** & **Comments Bottom Sheet** untuk melihat dan menulis komentar YouTube langsung dari pemutar.
+              - Dukungan **12 Bahasa** (EN, ID, JA, KO, ZH, ES, FR, DE, PT, RU, AR) serta cache UI & riwayat (`UiStateCache`, `HistoryStore`).
+            - **🦀 Peningkatan Mesin Native Rust (`ranzz-core`) & LiriQo**:
+              - Penanganan JNI exception yang lebih aman, deserialisasi LiriQo lebih fleksibel, peringkat penyedia lirik & parsing LRC multi-timestamp/offset lebih akurat.
+            - **⚡ Optimasi Performa & Perbaikan Kritis**:
+              - Penyatuan seluruh OkHttp client ke satu `ConnectionPool` dan `Dispatcher` bersama melalui `HttpClientProvider.baseClient`.
+              - Polling pemutaran adaptif (100ms saat layar penuh / 500ms saat mini), pemindahan startup disk I/O dari main thread, dan split APK per-ABI (`arm64-v8a`, `armeabi-v7a`, & Universal).
+              - Perbaikan *Add to Playlist*, tombol Share, auto-scroll lirik layar penuh, swipe antrean, serta aturan ProGuard/R8 & `MediaSessionService` Android 13–14.

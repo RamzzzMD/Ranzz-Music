@@ -41,6 +41,8 @@ object PlayerQueueManager : IPlayerQueueManager {
     private val queue = ArrayList<Track>()
     private val playbackHistory = ArrayDeque<Int>()
     private val shuffleDeck = ArrayList<Int>()
+    @Volatile
+    var sleepTimerEndOfTrack: Boolean = false
 
     private val _queueState = MutableStateFlow<List<Track>>(emptyList())
     override val queueState: StateFlow<List<Track>> = _queueState.asStateFlow()
@@ -60,12 +62,17 @@ object PlayerQueueManager : IPlayerQueueManager {
     private val _consecutiveErrors = MutableStateFlow<Int>(0)
     override val consecutiveErrors: StateFlow<Int> = _consecutiveErrors.asStateFlow()
 
-    @Volatile
-    var isUiControllerActive: Boolean = false
-
-    private var lastAutoAdvanceTimeMs = 0L
-
     fun getInstance(): PlayerQueueManager = this
+
+    fun consumeSleepTimerEndOfTrack(): Boolean {
+        synchronized(lock) {
+            if (sleepTimerEndOfTrack) {
+                sleepTimerEndOfTrack = false
+                return true
+            }
+            return false
+        }
+    }
 
     override fun setQueue(tracks: List<Track>, startIndex: Int) {
         synchronized(lock) {
@@ -93,7 +100,9 @@ object PlayerQueueManager : IPlayerQueueManager {
     override fun playTrack(track: Track, newQueue: List<Track>) {
         synchronized(lock) {
             _consecutiveErrors.value = 0
-            if (newQueue.isNotEmpty() && newQueue != queue) {
+            val isDifferentQueue = newQueue.size != queue.size ||
+                newQueue.indices.any { newQueue[it].id != queue[it].id }
+            if (newQueue.isNotEmpty() && isDifferentQueue) {
                 queue.clear()
                 queue.addAll(newQueue)
                 playbackHistory.clear()
@@ -245,6 +254,7 @@ object PlayerQueueManager : IPlayerQueueManager {
                     queue.removeAt(queue.size - 1)
                 }
                 shuffleDeck.removeAll { it >= retainCount }
+                playbackHistory.removeAll { it >= retainCount }
                 _queueState.value = queue.toList()
             }
         }
@@ -253,14 +263,6 @@ object PlayerQueueManager : IPlayerQueueManager {
     override fun getNextTrack(userInitiated: Boolean, isErrorRecovery: Boolean): Track? {
         synchronized(lock) {
             if (queue.isEmpty()) return null
-
-            val now = System.currentTimeMillis()
-            if (!userInitiated) {
-                if (now - lastAutoAdvanceTimeMs < 1500L) {
-                    return null
-                }
-                lastAutoAdvanceTimeMs = now
-            }
 
             if (_repeatMode.value == Player.REPEAT_MODE_ONE && !userInitiated && !isErrorRecovery) {
                 return _currentTrack.value ?: queue.getOrNull(_currentIndex.value)
@@ -275,6 +277,8 @@ object PlayerQueueManager : IPlayerQueueManager {
                     shuffleDeck.clear()
                     shuffleDeck.addAll(newDeck)
                     nextIndex = if (shuffleDeck.isNotEmpty()) shuffleDeck.removeAt(0) else -1
+                } else if (_repeatMode.value == Player.REPEAT_MODE_ALL && queue.size == 1) {
+                    nextIndex = 0
                 } else {
                     nextIndex = -1
                 }
@@ -289,7 +293,7 @@ object PlayerQueueManager : IPlayerQueueManager {
             }
 
             return if (nextIndex in queue.indices) {
-                if (_currentIndex.value in queue.indices) {
+                if (_currentIndex.value in queue.indices && _currentIndex.value != nextIndex) {
                     playbackHistory.addLast(_currentIndex.value)
                     if (playbackHistory.size > 200) playbackHistory.removeFirst()
                 }
@@ -307,10 +311,11 @@ object PlayerQueueManager : IPlayerQueueManager {
         synchronized(lock) {
             if (queue.isEmpty()) return null
 
-            if (playbackHistory.isNotEmpty()) {
+            while (playbackHistory.isNotEmpty()) {
                 val prevIndex = playbackHistory.removeLast()
                 if (prevIndex in queue.indices) {
                     if (_isShuffle.value && _currentIndex.value in queue.indices) {
+                        shuffleDeck.remove(_currentIndex.value)
                         shuffleDeck.add(0, _currentIndex.value)
                     }
                     _currentIndex.value = prevIndex
@@ -348,21 +353,17 @@ object PlayerQueueManager : IPlayerQueueManager {
     override fun hasNext(): Boolean {
         synchronized(lock) {
             if (queue.isEmpty()) return false
-            if (_repeatMode.value == Player.REPEAT_MODE_ALL || _repeatMode.value == Player.REPEAT_MODE_ONE) return true
-            if (_isShuffle.value) {
-                return shuffleDeck.isNotEmpty()
+            return when {
+                _repeatMode.value == Player.REPEAT_MODE_ALL -> true
+                _isShuffle.value -> shuffleDeck.isNotEmpty()
+                else -> _currentIndex.value + 1 < queue.size
             }
-            return _currentIndex.value + 1 < queue.size
         }
     }
 
     override fun hasPrevious(): Boolean {
         synchronized(lock) {
-            if (queue.isEmpty()) return false
-            if (playbackHistory.isNotEmpty()) return true
-            if (_repeatMode.value == Player.REPEAT_MODE_ALL && queue.size > 1) return true
-            if (!_isShuffle.value && _currentIndex.value > 0) return true
-            return false
+            return queue.isNotEmpty() || _currentTrack.value != null
         }
     }
 
