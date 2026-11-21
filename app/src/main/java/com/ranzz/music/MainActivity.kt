@@ -61,6 +61,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -239,19 +240,34 @@ fun MainAppScreen(viewModel: MusicViewModel, onPageChanged: (Int) -> Unit = {}) 
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(colors.surface)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    colors.surface.copy(alpha = 0.94f),
+                                    colors.background.copy(alpha = 0.98f)
+                                )
+                            )
+                        )
                 ) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(1.dp)
-                            .background(colors.border.copy(alpha = 0.45f))
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(
+                                        colors.border.copy(alpha = 0.2f),
+                                        colors.textPrimary.copy(alpha = 0.24f),
+                                        colors.border.copy(alpha = 0.2f)
+                                    )
+                                )
+                            )
                     )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .navigationBarsPadding()
-                            .height(58.dp)
+                            .height(62.dp)
                             .pointerInput(pagerState.currentPage) {
                                 detectHorizontalDragGestures(
                                     onDragStart = { navSwipeOffsetX = 0f },
@@ -280,9 +296,14 @@ fun MainAppScreen(viewModel: MusicViewModel, onPageChanged: (Int) -> Unit = {}) 
                         navItems.forEachIndexed { index, screen ->
                             val selected = pagerState.currentPage == index
                             val itemAlpha by animateFloatAsState(
-                                targetValue = if (selected) 1f else 0.56f,
+                                targetValue = if (selected) 1f else 0.54f,
                                 animationSpec = RanzzMotion.appleSnappySpring(),
                                 label = "nav_item_alpha"
+                            )
+                            val itemScale by animateFloatAsState(
+                                targetValue = if (selected) 1.08f else 0.96f,
+                                animationSpec = RanzzMotion.appleSnappySpring(),
+                                label = "nav_item_scale"
                             )
                             val interactionSource = remember { MutableInteractionSource() }
                             Column(
@@ -295,18 +316,20 @@ fun MainAppScreen(viewModel: MusicViewModel, onPageChanged: (Int) -> Unit = {}) 
                                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                         navigateToPage(index)
                                     }
-                                    .padding(vertical = 6.dp),
+                                    .padding(vertical = 5.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {
                                 Icon(
-                                    imageVector = screen.icon,
+                                    painter = painterResource(screen.iconRes),
                                     contentDescription = stringResource(screen.titleRes),
                                     tint = if (selected) colors.textPrimary else colors.textMuted,
                                     modifier = Modifier
-                                        .size(22.dp)
+                                        .size(27.dp)
                                         .graphicsLayer {
                                             alpha = itemAlpha
+                                            scaleX = itemScale
+                                            scaleY = itemScale
                                         }
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
